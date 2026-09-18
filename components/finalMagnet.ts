@@ -1,0 +1,1 @@
+export { createFinalMagnetImage } from "../lib/createFinalMagnetImage";
