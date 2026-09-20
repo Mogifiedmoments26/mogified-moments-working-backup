@@ -14,10 +14,17 @@ export default function ThankYouStickerSheet({
   const stickers = Array.from({ length: count }, (_, i) => i + 1);
 
   function handleDirectPrint() {
-    const sheetElement = document.getElementById("a4-thank-you-print-area");
+    const sheetElement = document.getElementById(
+      "a4-thank-you-print-area"
+    );
     if (!sheetElement) return;
 
-    const printWin = window.open("", "_blank", "width=900,height=1000");
+    const printWin = window.open(
+      "",
+      "_blank",
+      "width=900,height=1000"
+    );
+
     if (!printWin) {
       window.print();
       return;
@@ -33,10 +40,13 @@ export default function ThankYouStickerSheet({
               size: A4 portrait;
               margin: 0;
             }
+
             * {
               box-sizing: border-box;
             }
-            html, body {
+
+            html,
+            body {
               margin: 0;
               padding: 0;
               background: #ffffff;
@@ -44,6 +54,7 @@ export default function ThankYouStickerSheet({
               -webkit-print-color-adjust: exact !important;
               print-color-adjust: exact !important;
             }
+
             .a4-thank-you-page {
               width: 210mm;
               min-height: 297mm;
@@ -51,6 +62,7 @@ export default function ThankYouStickerSheet({
               margin: 0 auto;
               background: #ffffff;
             }
+
             .thank-you-grid {
               display: grid;
               grid-template-columns: repeat(3, 62mm);
@@ -58,19 +70,26 @@ export default function ThankYouStickerSheet({
               gap: 1.8mm 2.5mm;
               justify-content: center;
             }
+
             .thank-you-sticker {
               width: 62mm;
               height: 20mm;
               padding: 1.8mm 2.2mm;
-              background: linear-gradient(135deg, #fff7fb 0%, #faf3ff 50%, #effaf8 100%);
+              background: linear-gradient(
+                135deg,
+                #fff7fb 0%,
+                #faf3ff 50%,
+                #effaf8 100%
+              );
               border: 0.25mm dashed #d4b5f0;
-              border-radius: 2.5mm;
+              border-radius: 0;
               text-align: center;
               display: flex;
               flex-direction: column;
               justify-content: center;
               align-items: center;
             }
+
             .ty-header {
               font-size: 6.8pt;
               font-weight: 900;
@@ -79,12 +98,14 @@ export default function ThankYouStickerSheet({
               line-height: 1.1;
               margin-bottom: 0.4mm;
             }
+
             .ty-subhead {
               font-size: 5.2pt;
               font-weight: 800;
               color: #7048d8;
               margin-bottom: 0.5mm;
             }
+
             .ty-body {
               font-size: 4.6pt;
               color: #433d59;
@@ -92,20 +113,24 @@ export default function ThankYouStickerSheet({
               line-height: 1.25;
               margin-bottom: 0.6mm;
             }
+
             .ty-footer {
               font-size: 4.4pt;
               font-weight: 800;
               color: #ec3e82;
               letter-spacing: 0.04em;
             }
+
             .ty-brand {
               color: #7048d8;
               font-weight: 900;
             }
           </style>
         </head>
+
         <body>
           ${sheetElement.outerHTML}
+
           <script>
             window.onload = () => {
               setTimeout(() => {
@@ -117,6 +142,7 @@ export default function ThankYouStickerSheet({
         </body>
       </html>
     `);
+
     printWin.document.close();
   }
 
@@ -124,33 +150,72 @@ export default function ThankYouStickerSheet({
     <div className="thank-you-modal">
       <div className="no-print ty-actions-bar">
         <div>
-          <strong>💖 "Thank You" Bottom Strip Stickers</strong>
-          <p>Prints 39 stickers per A4 sheet (61 × 20 mm). Aligns flush below your Backer QR sticker.</p>
+          <strong>
+            💖 "Thank You" Bottom Strip Stickers
+          </strong>
+
+          <p>
+            Prints 39 stickers per A4 sheet (61 × 20 mm).
+            Aligns flush below your Backer QR sticker.
+          </p>
         </div>
 
-        <div style={{ display: "flex", gap: "10px" }}>
-          <button type="button" className="action-btn secondary" onClick={onClose}>
+        <div
+          style={{
+            display: "flex",
+            gap: "10px",
+          }}
+        >
+          <button
+            type="button"
+            className="action-btn secondary"
+            onClick={onClose}
+          >
             Close Preview
           </button>
-          <button type="button" className="action-btn primary" onClick={handleDirectPrint}>
+
+          <button
+            type="button"
+            className="action-btn primary"
+            onClick={handleDirectPrint}
+          >
             🖨️ Print Sheet (A4)
           </button>
         </div>
       </div>
 
       <div className="ty-sheet-canvas">
-        <div id="a4-thank-you-print-area" className="a4-thank-you-page">
+        <div
+          id="a4-thank-you-print-area"
+          className="a4-thank-you-page"
+        >
           <div className="thank-you-grid">
             {stickers.map((num) => (
-              <div key={num} className="thank-you-sticker">
-                <div className="ty-header">💖 WITH SINCERE THANKS 💖</div>
-                <div className="ty-subhead">From Our Hands to Yours</div>
-                <div className="ty-body">
-                  Thank you for supporting our dream! Every custom product helps our small business grow &amp; keeps your sweetest moments alive.
+              <div
+                key={num}
+                className="thank-you-sticker"
+              >
+                <div className="ty-header">
+                  💖 WITH SINCERE THANKS 💖
                 </div>
+
+                <div className="ty-subhead">
+                  From Our Hands to Yours
+                </div>
+
+                <div className="ty-body">
+                  Thank you for supporting our dream!
+                  Every custom product helps our small
+                  business grow &amp; keeps your sweetest
+                  moments alive.
+                </div>
+
                 <div className="ty-footer">
-                  ✨ Made in minutes, treasured for a lifetime ✨ •{" "}
-                  <span className="ty-brand">Mogified Moments</span>
+                  ✨ Made in minutes, treasured for a
+                  lifetime ✨ •{" "}
+                  <span className="ty-brand">
+                    Mogified Moments
+                  </span>
                 </div>
               </div>
             ))}
@@ -239,9 +304,14 @@ export default function ThankYouStickerSheet({
           width: 62mm;
           height: 20mm;
           padding: 1.8mm 2.2mm;
-          background: linear-gradient(135deg, #fff7fb 0%, #faf3ff 50%, #effaf8 100%);
+          background: linear-gradient(
+            135deg,
+            #fff7fb 0%,
+            #faf3ff 50%,
+            #effaf8 100%
+          );
           border: 0.25mm dashed #d4b5f0;
-          border-radius: 2.5mm;
+          border-radius: 0;
           text-align: center;
           box-sizing: border-box;
           display: flex;
