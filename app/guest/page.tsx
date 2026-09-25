@@ -35,6 +35,8 @@ function GuestUploadContent() {
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState("");
+  const [customBackgroundPreview, setCustomBackgroundPreview] =
+    useState("");
 
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -139,6 +141,17 @@ function GuestUploadContent() {
     return null;
   })();
 
+  /*
+   * Party Hub can save a custom background as a
+   * Firebase Storage URL. Keep this completely
+   * independent from the built-in backgroundId.
+   */
+  const customBackgroundSrc =
+    String(
+      (partyOrder as any)?.customBackgroundUrl ||
+        ""
+    ).trim() || null;
+
   const productValue = String(
     (partyOrder as any)?.productType ||
       (partyOrder as any)?.product ||
@@ -149,6 +162,72 @@ function GuestUploadContent() {
 
   const isCircle =
     productValue.includes("circle");
+
+  /*
+   * Generate a live magnet preview when the party has a
+   * custom uploaded background.
+   *
+   * The existing cropper remains the editing surface.
+   * This preview shows the actual final composition:
+   * background -> guest photo/cutout -> party frame.
+   */
+  useEffect(() => {
+    let cancelled = false;
+
+    if (
+      !customBackgroundSrc ||
+      !photo ||
+      !cropPixels
+    ) {
+      setCustomBackgroundPreview("");
+      return;
+    }
+
+    const generatePreview = async () => {
+      try {
+        const preview =
+          await createFinalMagnetImage({
+            photo,
+            frameSrc:
+              activeFrame?.src || null,
+            cropPixels,
+            customBackgroundSrc,
+            shape: isCircle
+              ? "circle"
+              : "square",
+          });
+
+        if (!cancelled) {
+          setCustomBackgroundPreview(preview);
+        }
+      } catch (previewError) {
+        console.error(
+          "Custom background preview failed:",
+          previewError
+        );
+
+        if (!cancelled) {
+          setCustomBackgroundPreview("");
+        }
+      }
+    };
+
+    const timer = window.setTimeout(
+      generatePreview,
+      350
+    );
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [
+    photo,
+    cropPixels,
+    customBackgroundSrc,
+    activeFrame?.src,
+    isCircle,
+  ]);
 
   /*
    * PRODUCT ARTWORK / FINISHED AREA RATIO
@@ -215,6 +294,10 @@ function GuestUploadContent() {
     try {
       /*
        * Create the final print-ready magnet image.
+       *
+       * A Party Hub uploaded custom background is
+       * passed through when available. Otherwise the
+       * generator behaves exactly as before.
        */
       const finalMagnetImage =
         await createFinalMagnetImage({
@@ -222,6 +305,7 @@ function GuestUploadContent() {
           frameSrc:
             activeFrame?.src || null,
           cropPixels,
+          customBackgroundSrc,
           shape: isCircle
             ? "circle"
             : "square",
@@ -613,6 +697,28 @@ function GuestUploadContent() {
             </div>
           )}
 
+          {customBackgroundSrc &&
+            photo &&
+            customBackgroundPreview && (
+              <div className="custom-background-preview-section">
+                <div className="custom-background-preview-title">
+                  ✨ Live Magnet Preview
+                </div>
+
+                <div className="custom-background-preview-card">
+                  <img
+                    src={customBackgroundPreview}
+                    alt="Live magnet preview with party background"
+                    className="custom-background-preview-image"
+                  />
+                </div>
+
+                <div className="custom-background-preview-note">
+                  Your party background will be used for the final magnet.
+                </div>
+              </div>
+            )}
+
           {error && (
             <div className="error-box">
               {error}
@@ -909,6 +1015,56 @@ function GuestUploadContent() {
           font-weight: 800;
           cursor: pointer;
           text-decoration: underline;
+        }
+
+        .custom-background-preview-section {
+          width: 100%;
+          box-sizing: border-box;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 7px;
+          margin-top: 2px;
+          padding: 12px;
+          background: #f8f5ff;
+          border: 1px solid #ddd2ff;
+          border-radius: 12px;
+        }
+
+        .custom-background-preview-title {
+          width: 100%;
+          text-align: center;
+          color: #7048d8;
+          font-size: 13px;
+          font-weight: 900;
+        }
+
+        .custom-background-preview-card {
+          width: 220px;
+          height: 220px;
+          border-radius: 12px;
+          overflow: hidden;
+          background: #ffffff;
+          box-shadow:
+            0 4px 12px
+            rgba(0, 0, 0, 0.12);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+
+        .custom-background-preview-image {
+          display: block;
+          width: 100%;
+          height: 100%;
+          object-fit: contain;
+        }
+
+        .custom-background-preview-note {
+          color: #64748b;
+          font-size: 10px;
+          line-height: 1.4;
+          text-align: center;
         }
 
         .error-box {

@@ -7,6 +7,7 @@ import {
   type ProductId,
 } from "../lib/products";
 import { FRAMES, type Frame } from "../lib/frames";
+import { BACKGROUNDS, type BackgroundId } from "../lib/backgrounds";
 import { PARTY_PACKAGES, type PartyPackage } from "../lib/packages";
 import {
   makeOrderId,
@@ -82,6 +83,7 @@ type CartItem = {
   frameId: string | null;
   customFrameSrc?: string | null;
   customWatermark?: string;
+  backgroundId?: BackgroundId | null;
 };
 
 type PlacedOrder = Order &
@@ -135,6 +137,7 @@ export default function CustomerApp() {
   const [cropPixels, setCropPixels] = useState<CropPixels | null>(null);
   const [frameId, setFrameId] = useState<string | null>(null);
   const [frameCategory, setFrameCategory] = useState("All");
+  const [backgroundId, setBackgroundId] = useState<BackgroundId | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [customWatermark, setCustomWatermark] = useState<string>("");
 
@@ -156,6 +159,8 @@ export default function CustomerApp() {
   const [paymentOption, setPaymentOption] = useState<"advance" | "full">("advance");
   const [customFrameRequested, setCustomFrameRequested] = useState(false);
   const [customFrameNotes, setCustomFrameNotes] = useState("");
+  const [customBackgroundRequested, setCustomBackgroundRequested] = useState(false);
+  const [customBackgroundNotes, setCustomBackgroundNotes] = useState("");
 
   const [bookedDates, setBookedDates] = useState<string[]>([]);
 
@@ -348,8 +353,11 @@ export default function CustomerApp() {
     setCustomCustomerFrameSrc(null);
     setCustomFrameRequested(false);
     setCustomFrameNotes("");
+    setCustomBackgroundRequested(false);
+    setCustomBackgroundNotes("");
     setCustomWatermark("");
     setFrameCategory("All");
+    setBackgroundId(null);
     setProduct("square");
     setKeychainStrap("leather");
     setEditingId(null);
@@ -481,6 +489,7 @@ export default function CustomerApp() {
       frameId,
       customFrameSrc: customCustomerFrameSrc,
       customWatermark,
+      backgroundId,
     };
 
     setCart((current) =>
@@ -535,6 +544,10 @@ export default function CustomerApp() {
         setError("Please provide the Event Date and Venue.");
         return;
       }
+      if (customBackgroundRequested && !customBackgroundNotes.trim()) {
+        setError("Please describe the custom background you would like us to create.");
+        return;
+      }
       if (bookedDates.includes(eventDate)) {
         setError(`⚠️ ${eventDate} is already booked for another celebration. Please select an available date.`);
         return;
@@ -585,6 +598,7 @@ export default function CustomerApp() {
             frameSrc: selectedFrame?.src ?? null,
             cropPixels: cropPixels ?? null,
             shape: product === "circle" ? "circle" : "square",
+            backgroundId,
           });
 
           try {
@@ -628,8 +642,10 @@ export default function CustomerApp() {
           photoUrl: finalPhotoUrl,
           originalPhotoUrl,
           appliedFrameId: customCustomerFrameSrc ? "custom-customer-frame" : frameId,
+          backgroundId,
+          customBackgroundRequested,
+          customBackgroundNotes: customBackgroundRequested ? customBackgroundNotes.trim() : "",
           crop,
-          photoData: photo || "",
           total: baseOrderTotal,
           status: "New" as const,
           createdAt: new Date().toISOString(),
@@ -680,6 +696,7 @@ export default function CustomerApp() {
                 frameSrc: frame?.src ?? null,
                 cropPixels: item.cropPixels ?? null,
                 shape: (item.productId as string) === "leather_name_keychain" ? "keychain" : (item.productId as ProductId),
+                backgroundId: item.backgroundId ?? null,
               });
 
           let originalPhotoUrl = item.photo;
@@ -736,8 +753,8 @@ export default function CustomerApp() {
             photoBackUrl: backPhotoUrl || undefined,
             keychainStrap: item.keychainStrap,
             appliedFrameId: item.customFrameSrc ? "custom-customer-frame" : item.frameId,
+            backgroundId: item.backgroundId ?? null,
             crop: item.crop,
-            photoData: item.photo,
             total: itemTotal,
             status: "New" as const,
             createdAt: new Date().toISOString(),
@@ -760,6 +777,9 @@ export default function CustomerApp() {
             }
           } catch (apiErr) {
             console.error(`Network error on item ${i + 1}:`, apiErr);
+            throw apiErr instanceof Error
+              ? apiErr
+              : new Error(`Item ${i + 1} failed to save.`);
           }
 
           created.push(newOrder);
@@ -1437,6 +1457,9 @@ export default function CustomerApp() {
                       setCrop(EMPTY_CROP);
                       setCropPixels(null);
                       setFrameId(null);
+                      setBackgroundId(null);
+                       setCustomBackgroundRequested(false);
+                       setCustomBackgroundNotes("");
                     }}
                     className={`mm-frame-card ${product === id ? "selected" : ""}`}
                     style={{ padding: "12px", textAlign: "left" }}
@@ -1694,6 +1717,7 @@ export default function CustomerApp() {
                         cropPixels={cropPixels}
                         customWatermark={customWatermark}
                         product={product}
+                        backgroundId={backgroundId}
                       />
                       <strong>
                         {product === "circle"
@@ -1888,6 +1912,125 @@ export default function CustomerApp() {
             )}
 
             {(product === "square" || product === "circle" || selectedPackage) && (product as string) !== "leather_name_keychain" && (
+              <div className="mm-background-section">
+                <div className="mm-frame-title">
+                  <div>
+                    <p className="mm-eyebrow">Themed Backdrop</p>
+                    <h3>Choose a background for your photo</h3>
+                    <p style={{ margin: "4px 0 0", fontSize: "12px", color: "#756f87" }}>
+                      Choose one of our themes, keep the original photo, or request a fully customised background.
+                    </p>
+                  </div>
+                  {(backgroundId || customBackgroundRequested) && (
+                    <button
+                      type="button"
+                      className="mm-link"
+                      onClick={() => {
+                        setBackgroundId(null);
+                        setCustomBackgroundRequested(false);
+                        setCustomBackgroundNotes("");
+                      }}
+                    >
+                      Remove background
+                    </button>
+                  )}
+                </div>
+
+                <div className="mm-background-grid">
+                  <button
+                    type="button"
+                    className={`mm-background-card ${!backgroundId && !customBackgroundRequested ? "selected" : ""}`}
+                    onClick={() => {
+                      setBackgroundId(null);
+                      setCustomBackgroundRequested(false);
+                      setCustomBackgroundNotes("");
+                    }}
+                  >
+                    <div className="mm-background-thumb mm-background-none"><span>Original</span></div>
+                    <strong>No backdrop</strong>
+                    <span>Keep original photo</span>
+                  </button>
+
+                  {BACKGROUNDS.map((background) => (
+                    <button
+                      type="button"
+                      key={background.id}
+                      className={`mm-background-card ${backgroundId === background.id ? "selected" : ""}`}
+                      onClick={() => {
+                        setBackgroundId(background.id);
+                        setCustomBackgroundRequested(false);
+                        setCustomBackgroundNotes("");
+                      }}
+                    >
+                      <div className="mm-background-thumb">
+                        <img
+                          src={product === "circle" ? background.circleSrc : background.squareSrc}
+                          alt=""
+                          loading="lazy"
+                        />
+                        <span>{background.name}</span>
+                      </div>
+                      <strong>{background.name}</strong>
+                      <span>{background.description}</span>
+                    </button>
+                  ))}
+
+                  {selectedPackage && (
+                    <button
+                      type="button"
+                      className={`mm-background-card mm-background-custom-card ${customBackgroundRequested ? "selected" : ""}`}
+                      onClick={() => {
+                        setCustomBackgroundRequested((current) => {
+                          const next = !current;
+                          if (next) {
+                            setBackgroundId(null);
+                            setCustomBackgroundNotes("");
+                          }
+                          return next;
+                        });
+                      }}
+                    >
+                      <div className="mm-background-thumb mm-background-custom">
+                        <div className="mm-background-custom-icon">✨</div>
+                        <span>Custom</span>
+                      </div>
+                      <strong>Request Custom Background</strong>
+                      <span>We'll create a personalised backdrop for your celebration.</span>
+                    </button>
+                  )}
+                </div>
+
+                {customBackgroundRequested && selectedPackage && (
+                  <div className="mm-custom-background-request-box">
+                    <strong>✨ Custom Background Request</strong>
+                    <p>
+                      Tell us what you want for the entire background/theme. This is separate from your frame request.
+                    </p>
+                    <textarea
+                      value={customBackgroundNotes}
+                      onChange={(e) => setCustomBackgroundNotes(e.target.value)}
+                      placeholder="e.g. Cecilia's 3rd Birthday — icy crystals, snow and a magical winter theme"
+                      rows={3}
+                    />
+                  </div>
+                )}
+
+                {backgroundId && !customBackgroundRequested && (
+                  <div className="mm-background-notice">
+                    ✨ <strong>{BACKGROUNDS.find((item) => item.id === backgroundId)?.name}</strong> backdrop selected.
+                    Your photo will be automatically cut out and placed over this backdrop when the final magnet image is created.
+                  </div>
+                )}
+
+                {customBackgroundRequested && (
+                  <div className="mm-background-notice mm-background-custom-notice">
+                    ✨ <strong>Custom background requested.</strong> Your description will be sent with the Party Package order for the customised backdrop.
+                  </div>
+                )}
+              </div>
+            )}
+
+            {(product === "square" || product === "circle" || selectedPackage) && (product as string) !== "leather_name_keychain" && (
               <div className="mm-frame-section">
                 <div className="mm-frame-title">
                   <div>
@@ -2077,6 +2220,7 @@ export default function CustomerApp() {
                           cropPixels={item.cropPixels ?? null}
                           customWatermark={item.customWatermark}
                           product={(item.productId as string) === "leather_name_keychain" ? "keychain" : item.productId}
+                          backgroundId={item.backgroundId ?? null}
                           small
                         />
                         <div>
@@ -2386,6 +2530,7 @@ function MagnetPreviewInline({
   crop,
   cropPixels,
   customWatermark,
+  backgroundId = null,
   small = false,
   product = "square",
 }: {
@@ -2394,23 +2539,92 @@ function MagnetPreviewInline({
   crop: CropState;
   cropPixels?: CropPixels | null;
   customWatermark?: string;
+  backgroundId?: BackgroundId | null;
   small?: boolean;
   product?: ProductId | "leather_name_keychain";
 }) {
   const isCircle = product === "circle" || product === "keychain" || (product as string) === "leather_name_keychain";
+  const [themedPreviewSrc, setThemedPreviewSrc] = useState<string | null>(null);
+  const [isCreatingThemedPreview, setIsCreatingThemedPreview] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!photo || !backgroundId) {
+      setThemedPreviewSrc(null);
+      setIsCreatingThemedPreview(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    /*
+     * Background removal is the expensive part of the preview.
+     * Do not run it on every crop/zoom update. Wait until the user
+     * has stopped moving the crop for a short moment, then generate
+     * one fresh themed preview.
+     */
+    const timer = window.setTimeout(() => {
+      if (cancelled) return;
+
+      setIsCreatingThemedPreview(true);
+
+      createFinalMagnetImage({
+        photo,
+        frameSrc: frame?.src ?? null,
+        cropPixels: cropPixels ?? null,
+        shape: isCircle ? "circle" : "square",
+        backgroundId,
+      })
+        .then((src) => {
+          if (!cancelled) {
+            setThemedPreviewSrc(src);
+          }
+        })
+        .catch((error) => {
+          console.error("Themed live preview failed:", error);
+          if (!cancelled) {
+            setThemedPreviewSrc(null);
+          }
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setIsCreatingThemedPreview(false);
+          }
+        });
+    }, 800);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [photo, backgroundId, frame?.src, cropPixels, isCircle]);
+
+  const showThemedPreview = Boolean(backgroundId && themedPreviewSrc);
 
   return (
     <div className={`mm-preview ${isCircle ? "circle" : "square"} ${small ? "small" : ""}`}>
       <div className="mm-preview-inner">
-        {photo && (
-          <CroppedPreviewPhoto
-            photo={photo}
-            cropPixels={cropPixels}
-            crop={crop}
-            shape={isCircle ? "circle" : "square"}
+        {showThemedPreview ? (
+          <img
+            src={themedPreviewSrc || ""}
+            alt=""
+            className={`mm-preview-photo ${isCircle ? "circle" : "square"} full-bleed`}
           />
+        ) : (
+          <>
+            {photo && (
+              <CroppedPreviewPhoto
+                photo={photo}
+                cropPixels={cropPixels}
+                crop={crop}
+                shape={isCircle ? "circle" : "square"}
+              />
+            )}
+            {frame && <img src={frame.src} alt="" className="mm-preview-frame" />}
+          </>
         )}
-        {frame && <img src={frame.src} alt="" className="mm-preview-frame" />}
+
         {customWatermark && (
           <div
             style={{
@@ -2424,7 +2638,7 @@ function MagnetPreviewInline({
               fontWeight: 800,
               padding: "2px 4px",
               borderRadius: "3px",
-              zIndex: 3,
+              zIndex: 5,
               whiteSpace: "nowrap",
             }}
           >
@@ -2861,6 +3075,89 @@ function CustomerStyles() {
       .mm-btn-party {
         background: linear-gradient(135deg, #7048d8 0%, #ec3e82 100%);
       }
+      .mm-background-section { margin: 16px 0; padding: 16px; background: #fff; border: 1.5px solid #ecdff5; border-radius: 16px; }
+      .mm-background-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+      @media (min-width: 640px) { .mm-background-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+      .mm-background-card { border: 1.5px solid #e4dced; background: #fff; border-radius: 14px; padding: 8px; text-align: left; cursor: pointer; min-width: 0; }
+      .mm-background-card.selected { border-color: #7048d8; box-shadow: 0 0 0 2px rgba(112, 72, 216, 0.12); }
+      .mm-background-thumb { width: 100%; aspect-ratio: 1.35; border-radius: 10px; display: flex; align-items: flex-end; justify-content: center; padding: 7px; overflow: hidden; margin-bottom: 7px; position: relative; background: #f5f1f8; }
+      .mm-background-thumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+      .mm-background-thumb span { position: relative; z-index: 1; color: #292342; background: rgba(255,255,255,0.82); padding: 3px 7px; border-radius: 999px; font-size: 10px; font-weight: 900; }
+      .mm-background-card strong { display: block; color: #292342; font-size: 12px; margin-bottom: 2px; }
+      .mm-background-card > span { display: block; color: #756f87; font-size: 10px; line-height: 1.35; }
+      .mm-background-notice { margin-top: 12px; padding: 9px 11px; border-radius: 10px; background: #f4efff; color: #5b43a8; font-size: 11px; line-height: 1.45; }
+    .mm-background-custom-card {
+      border-color: #f0c36a;
+      background: #fffaf0;
+    }
+
+    .mm-background-custom-card.selected {
+      border-color: #d58a00;
+      box-shadow: 0 0 0 2px rgba(213, 138, 0, 0.14);
+    }
+
+    .mm-background-custom {
+      background: linear-gradient(135deg, #fff4d6, #f9d9ff, #dff4ff);
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      color: #7048d8;
+      font-weight: 900;
+    }
+
+    .mm-background-custom-icon {
+      font-size: 30px;
+      line-height: 1;
+      margin-bottom: 4px;
+    }
+
+    .mm-custom-background-request-box {
+      margin-top: 12px;
+      padding: 14px;
+      border: 1.5px solid #f0d59b;
+      border-radius: 14px;
+      background: #fffaf0;
+    }
+
+    .mm-custom-background-request-box strong {
+      display: block;
+      color: #7c4a00;
+      font-size: 13px;
+    }
+
+    .mm-custom-background-request-box p {
+      margin: 5px 0 9px;
+      color: #756f87;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .mm-custom-background-request-box textarea {
+      width: 100%;
+      min-height: 78px;
+      box-sizing: border-box;
+      border: 1px solid #e5d3ad;
+      border-radius: 10px;
+      padding: 10px 11px;
+      resize: vertical;
+      font: inherit;
+      font-size: 13px;
+      color: #292342;
+      background: #fff;
+      outline: none;
+    }
+
+    .mm-custom-background-request-box textarea:focus {
+      border-color: #d58a00;
+      box-shadow: 0 0 0 2px rgba(213, 138, 0, 0.10);
+    }
+
+    .mm-background-custom-notice {
+      background: #fffaf0;
+      border-color: #f0d59b;
+      color: #7c4a00;
+    }
+
       .mm-square-banner {
         display: flex;
         align-items: center;

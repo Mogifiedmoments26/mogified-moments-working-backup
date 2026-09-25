@@ -9,8 +9,10 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@imgly/background-removal": "^1.7.0",
     "lucide-react": "^0.468.0",
     "next": "^15.4.6",
+    "onnxruntime-web": "1.21.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "react-easy-crop": "^5.0.7"

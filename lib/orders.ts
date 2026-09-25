@@ -86,6 +86,7 @@ export async function listOrders(): Promise<Order[]> {
   }
 
   if (typeof window === "undefined") return [];
+
   try {
     const raw = localStorage.getItem(KEY);
     return raw ? JSON.parse(raw) : [];
@@ -99,8 +100,10 @@ export async function getOrder(orderId: string): Promise<Order | null> {
     if (db) {
       const docRef = doc(db, "orders", orderId);
       const snap = await getDoc(docRef);
+
       if (snap.exists()) {
         const data = snap.data();
+
         return {
           orderId: snap.id,
           ...data,
@@ -124,11 +127,13 @@ export async function saveOrder(order: Order): Promise<void> {
   try {
     if (db) {
       const docRef = doc(db, "orders", order.orderId);
+
       await setDoc(docRef, {
         ...lightweight,
         createdAt: lightweight.createdAt || new Date().toISOString(),
         timestamp: serverTimestamp(),
       });
+
       return;
     }
   } catch (err) {
@@ -137,12 +142,56 @@ export async function saveOrder(order: Order): Promise<void> {
 
   if (typeof window !== "undefined") {
     const existing = await listOrders();
-    const updated = [lightweight, ...existing.filter((o) => o.orderId !== order.orderId)];
+
+    const updated = [
+      lightweight,
+      ...existing.filter((o) => o.orderId !== order.orderId),
+    ];
+
     localStorage.setItem(KEY, JSON.stringify(updated));
   }
 }
 
-export async function updateOrderStatus(orderId: string, status: OrderStatus): Promise<void> {
+export async function updateOrderStatus(
+  orderId: string,
+  status: OrderStatus
+): Promise<void> {
+  /*
+   * Studio runs in the browser.
+   *
+   * Use the server-side /api/orders PATCH endpoint for status changes
+   * instead of attempting a direct browser-side Firestore update.
+   *
+   * This keeps Studio consistent with the Admin page and prevents the
+   * 4-second automatic refresh from restoring the old Firestore status.
+   */
+  if (typeof window !== "undefined") {
+    const res = await fetch("/api/orders", {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        orderId,
+        status,
+      }),
+    });
+
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+
+      throw new Error(
+        errorData?.error || "Failed to update order status."
+      );
+    }
+
+    return;
+  }
+
+  /*
+   * Preserve direct Firestore behaviour if this helper is ever called
+   * from a server-side context.
+   */
   try {
     if (db) {
       const docRef = doc(db, "orders", orderId);
@@ -151,12 +200,7 @@ export async function updateOrderStatus(orderId: string, status: OrderStatus): P
     }
   } catch (err) {
     console.warn("Firestore updateOrderStatus failed:", err);
-  }
-
-  if (typeof window !== "undefined") {
-    const existing = await listOrders();
-    const updated = existing.map((o) => (o.orderId === orderId ? { ...o, status } : o));
-    localStorage.setItem(KEY, JSON.stringify(updated));
+    throw err;
   }
 }
 
@@ -188,23 +232,45 @@ export async function nextOrderNumber(): Promise<number> {
   try {
     if (db) {
       const counterRef = doc(db, "meta", "orderCounter");
+
       const nextVal = await runTransaction(db, async (txn) => {
         const snap = await txn.get(counterRef);
+
         let count = 1;
+
         if (snap.exists()) {
           count = (snap.data().lastNumber || 0) + 1;
         }
-        txn.set(counterRef, { lastNumber: count }, { merge: true });
+
+        txn.set(
+          counterRef,
+          { lastNumber: count },
+          { merge: true }
+        );
+
         return count;
       });
+
       return nextVal;
     }
   } catch (err) {
-    console.warn("Firestore order counter failed, using timestamp count:", err);
+    console.warn(
+      "Firestore order counter failed, using timestamp count:",
+      err
+    );
   }
 
-  if (typeof window === "undefined") return Date.now() % 10000;
-  const current = Number(localStorage.getItem(COUNTER_KEY) || "0") + 1;
-  localStorage.setItem(COUNTER_KEY, String(current));
+  if (typeof window === "undefined") {
+    return Date.now() % 10000;
+  }
+
+  const current =
+    Number(localStorage.getItem(COUNTER_KEY) || "0") + 1;
+
+  localStorage.setItem(
+    COUNTER_KEY,
+    String(current)
+  );
+
   return current;
 }

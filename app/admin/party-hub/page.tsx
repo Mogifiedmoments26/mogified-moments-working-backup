@@ -3,6 +3,8 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Brand } from "../../../components/Brand";
 import { listOrders } from "../../../lib/orders";
+import { db, firebaseConfigured } from "../../../lib/firebase";
+import { collection, doc, getDocs, query, updateDoc, where } from "firebase/firestore";
 import { savePhoto } from "../../../lib/storage";
 
 const loadRazorpayScript = () => {
@@ -46,6 +48,11 @@ export default function PartyHubPage() {
   ] = useState<string | null>(null);
 
   const [
+    backgroundUploading,
+    setBackgroundUploading,
+  ] = useState<string | null>(null);
+
+  const [
     paymentOrder,
     setPaymentOrder,
   ] = useState<any | null>(null);
@@ -67,6 +74,11 @@ export default function PartyHubPage() {
   ] = useState<string | null>(null);
 
   const frameInputRefs =
+    useRef<{
+      [orderId: string]: HTMLInputElement | null;
+    }>({});
+
+  const backgroundInputRefs =
     useRef<{
       [orderId: string]: HTMLInputElement | null;
     }>({});
@@ -706,6 +718,121 @@ export default function PartyHubPage() {
     orderId: string
   ) {
     frameInputRefs.current[
+      orderId
+    ]?.click();
+  }
+
+  // ---------------------------------------------------------
+  // PARTY-WIDE CUSTOM BACKGROUND
+  // ---------------------------------------------------------
+
+  async function handleBackgroundUpload(
+    order: any,
+    file: File
+  ) {
+    if (!file.type.startsWith("image/")) {
+      alert("Please select an image file for the party background.");
+      return;
+    }
+
+    setBackgroundUploading(order.orderId);
+
+    try {
+      const reader = new FileReader();
+
+      const dataUrl = await new Promise<string>(
+        (resolve, reject) => {
+          reader.onload = () =>
+            resolve(String(reader.result));
+
+          reader.onerror = () =>
+            reject(
+              new Error(
+                "Could not read the background file."
+              )
+            );
+
+          reader.readAsDataURL(file);
+        }
+      );
+
+      const storageUrl = await savePhoto(
+        dataUrl,
+        order.orderId,
+        "party-custom-background.png"
+      );
+
+      if (!firebaseConfigured || !db) {
+        throw new Error(
+          "Firebase is not connected, so the party background could not be saved."
+        );
+      }
+
+      const ordersCol = collection(db, "orders");
+      const snapshot = await getDocs(
+        query(
+          ordersCol,
+          where("orderId", "==", order.orderId)
+        )
+      );
+
+      if (snapshot.empty) {
+        throw new Error(
+          "Could not find the party order in Firestore."
+        );
+      }
+
+      const orderRef = doc(
+        db,
+        "orders",
+        snapshot.docs[0].id
+      );
+
+      await updateDoc(orderRef, {
+        customBackgroundRequested: true,
+        customBackgroundNotes:
+          order.customBackgroundNotes ||
+          "Custom background uploaded by studio.",
+        customBackgroundUrl: storageUrl,
+      });
+
+      setOrders((prev) =>
+        prev.map((o) =>
+          o.orderId === order.orderId
+            ? {
+                ...o,
+                customBackgroundRequested: true,
+                customBackgroundUrl: storageUrl,
+                customBackgroundNotes:
+                  o.customBackgroundNotes ||
+                  "Custom background uploaded by studio.",
+              }
+            : o
+        )
+      );
+
+      alert(
+        "Party background saved. This custom background is now attached to the whole party order."
+      );
+    } catch (err: any) {
+      console.error(
+        "Party background upload error:",
+        err
+      );
+
+      alert(
+        err?.message ||
+          "Could not upload the party background."
+      );
+    } finally {
+      setBackgroundUploading(null);
+    }
+  }
+
+  function triggerBackgroundPicker(
+    orderId: string
+  ) {
+    backgroundInputRefs.current[
       orderId
     ]?.click();
   }
@@ -1514,6 +1641,7 @@ export default function PartyHubPage() {
           <p>
             Guest uploads,
             custom event frame,
+            custom background,
             printing &amp;
             payment tracking
           </p>
@@ -1646,6 +1774,28 @@ export default function PartyHubPage() {
                     (String(order.frameName || "").toLowerCase().startsWith("custom requested:")
                       ? String(order.frameName).replace(/^custom requested:\s*/i, "")
                       : "")
+                ).trim();
+
+              const customBackgroundRequested =
+                order.customBackgroundRequested === true ||
+                String(order.customBackgroundRequested || "").toLowerCase() === "true" ||
+                Boolean(
+                  order.customBackgroundNotes ||
+                    order.customBackgroundDescription ||
+                    order.customBackgroundRequestDescription
+                );
+
+              const customBackgroundDescription =
+                String(
+                  order.customBackgroundNotes ||
+                    order.customBackgroundDescription ||
+                    order.customBackgroundRequestDescription ||
+                    ""
+                ).trim();
+
+              const customBackgroundUrl =
+                String(
+                  order.customBackgroundUrl || ""
                 ).trim();
 
               const productId = String(
@@ -1788,6 +1938,35 @@ export default function PartyHubPage() {
                           >
                             <strong>Applied Custom Frame:</strong>{" "}
                             {String(frameValue)}
+                          </div>
+                        )}
+
+                        <div>
+                          <strong>Custom Background Requested:</strong>{" "}
+                          {customBackgroundRequested ? "Yes" : "No"}
+                        </div>
+
+                        {customBackgroundRequested && (
+                          <div
+                            style={{
+                              color: "#166534",
+                              marginTop: "2px",
+                            }}
+                          >
+                            <strong>Custom Background Description:</strong>{" "}
+                            {customBackgroundDescription || "No description provided"}
+                          </div>
+                        )}
+
+                        {customBackgroundUrl && (
+                          <div
+                            style={{
+                              wordBreak: "break-all",
+                              color: "#166534",
+                            }}
+                          >
+                            <strong>Applied Custom Background:</strong>{" "}
+                            Saved to Firebase Storage
                           </div>
                         )}
                       </div>
@@ -2050,6 +2229,114 @@ export default function PartyHubPage() {
                       <div className="frame-empty">
                         No custom party
                         frame uploaded yet.
+                      </div>
+                    )}
+                  </div>
+
+                  {/* --------------------------------------- */}
+                  {/* PARTY BACKGROUND */}
+                  {/* --------------------------------------- */}
+
+                  <div className="background-section">
+                    <div className="background-section-header">
+                      <div>
+                        <h3>🌄 Party-Wide Background</h3>
+                        <p>
+                          Upload or replace the custom background once.
+                          All guests use this background.
+                        </p>
+                      </div>
+
+                      <div>
+                        <input
+                          ref={(el) => {
+                            backgroundInputRefs.current[
+                              order.orderId
+                            ] = el;
+                          }}
+                          type="file"
+                          accept="image/*"
+                          hidden
+                          onChange={(e) => {
+                            const file =
+                              e.target.files?.[0];
+
+                            if (file) {
+                              handleBackgroundUpload(
+                                order,
+                                file
+                              );
+                            }
+
+                            e.target.value = "";
+                          }}
+                        />
+
+                        <button
+                          type="button"
+                          className="button primary"
+                          onClick={() =>
+                            triggerBackgroundPicker(
+                              order.orderId
+                            )
+                          }
+                          disabled={
+                            backgroundUploading ===
+                            order.orderId
+                          }
+                        >
+                          {backgroundUploading ===
+                          order.orderId
+                            ? "Uploading..."
+                            : customBackgroundUrl
+                            ? "🔄 Replace Background"
+                            : "🌄 Upload Custom Background"}
+                        </button>
+                      </div>
+                    </div>
+
+                    {customBackgroundUrl ? (
+                      <div className="background-preview-row">
+                        <div className="background-preview">
+                          <img
+                            src={customBackgroundUrl}
+                            alt="Party custom background"
+                          />
+                        </div>
+
+                        <div className="background-status">
+                          <strong>
+                            ✓ Custom background active
+                          </strong>
+
+                          <span>
+                            This background is attached to
+                            the whole party order.
+                          </span>
+
+                          {customBackgroundDescription && (
+                            <span>
+                              <strong>Request:</strong>{" "}
+                              {customBackgroundDescription}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="background-empty">
+                        {customBackgroundRequested
+                          ? (
+                            <>
+                              <strong>
+                                Custom background requested.
+                              </strong>{" "}
+                              Upload the finished background above.
+                              {customBackgroundDescription
+                                ? ` Request: ${customBackgroundDescription}`
+                                : ""}
+                            </>
+                          )
+                          : "No custom party background uploaded yet."}
                       </div>
                     )}
                   </div>
@@ -2728,6 +3015,93 @@ export default function PartyHubPage() {
           border: 1px dashed #cbd5e1;
           color: #94a3b8;
           font-size: 12px;
+          text-align: center;
+        }
+
+        /* ----------------------------------------------- */
+        /* BACKGROUND */
+        /* ----------------------------------------------- */
+
+        .background-section {
+          border: 1px solid #dbeafe;
+          background: #f8fbff;
+          border-radius: 16px;
+          padding: 15px;
+          margin-bottom: 18px;
+        }
+
+        .background-section-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 15px;
+          margin-bottom: 12px;
+        }
+
+        .background-section-header h3 {
+          margin: 0;
+          font-size: 14px;
+          color: #334155;
+        }
+
+        .background-section-header p {
+          margin: 3px 0 0;
+          font-size: 11px;
+          color: #64748b;
+        }
+
+        .background-preview-row {
+          display: flex;
+          align-items: center;
+          gap: 14px;
+          padding-top: 10px;
+          border-top: 1px solid #dbeafe;
+        }
+
+        .background-preview {
+          width: 150px;
+          height: 90px;
+          border-radius: 12px;
+          background: #fff;
+          border: 1px solid #bfdbfe;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          overflow: hidden;
+          flex-shrink: 0;
+        }
+
+        .background-preview img {
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+        }
+
+        .background-status {
+          display: flex;
+          flex-direction: column;
+          gap: 5px;
+        }
+
+        .background-status strong {
+          font-size: 13px;
+          color: #15803d;
+        }
+
+        .background-status span {
+          font-size: 11px;
+          color: #64748b;
+          line-height: 1.5;
+        }
+
+        .background-empty {
+          padding: 12px;
+          border-radius: 10px;
+          background: #fff;
+          border: 1px dashed #bfdbfe;
+          color: #64748b;
+          font-size: 12px;
+          line-height: 1.5;
           text-align: center;
         }
 
