@@ -31,6 +31,7 @@ export default function Studio({ onLogout }: StudioProps) {
 
   // Active Inspect Order Modal
   const [viewingOrder, setViewingOrder] = useState<Order | null>(null);
+  const [brightnessAdjustments, setBrightnessAdjustments] = useState<Record<string, number>>({});
 
   // Inventory / Consumables tracking
   const [blankBases, setBlankBases] = useState<number>(100);
@@ -39,6 +40,8 @@ export default function Studio({ onLogout }: StudioProps) {
 
   const prevOrderCount = useRef<number>(0);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const printLockRef = useRef(false);
+  const [isPrinting, setIsPrinting] = useState(false);
 
   function playChimeSound() {
     try {
@@ -469,17 +472,81 @@ useEffect(() => {
     printWindow.document.close();
   }
 
-  function handlePrintBatch() {
-    if (selectedIds.length === 0) {
+  function getBrightness(orderId: string) {
+    return brightnessAdjustments[orderId] ?? 100;
+  }
+
+  function setOrderBrightness(orderId: string, value: number) {
+    const nextValue = Math.max(70, Math.min(130, Math.round(value)));
+    setBrightnessAdjustments((prev) => ({
+      ...prev,
+      [orderId]: nextValue,
+    }));
+  }
+
+  async function handlePrintBatch(orderIds: string[] = selectedIds) {
+    if (printLockRef.current) return;
+    if (orderIds.length === 0) {
       alert("Please select at least 1 order to print.");
       return;
     }
 
-    const printItems = orders.filter((o) => selectedIds.includes(o.orderId));
+    const printItems = orders.filter((o) => orderIds.includes(o.orderId));
     const printWindow = window.open("", "_blank");
     if (!printWindow) {
       alert("Please allow popups to open print sheets.");
       return;
+    }
+
+    printLockRef.current = true;
+    setIsPrinting(true);
+    // Prevent duplicate clicks while opening the print sheet; this is not a physical printer completion signal.
+    window.setTimeout(() => {
+      printLockRef.current = false;
+      setIsPrinting(false);
+    }, 3000);
+
+    // The browser cannot detect when the physical printer has finished.
+    // Mark the selected orders as Processing once the print window is successfully opened.
+    try {
+      const statusResults = await Promise.all(
+        printItems.map(async (item) => {
+          const res = await fetch("/api/orders", {
+            method: "PATCH",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              orderId: item.orderId,
+              status: "Processing",
+            }),
+          });
+
+          if (!res.ok) {
+            throw new Error(`Could not update ${item.orderId} to Processing.`);
+          }
+
+          return item.orderId;
+        })
+      );
+
+      if (statusResults.length > 0) {
+        setOrders((current) =>
+          current.map((item) =>
+            statusResults.includes(item.orderId)
+              ? { ...item, status: "Processing" }
+              : item
+          )
+        );
+
+        setViewingOrder((current) =>
+          current && statusResults.includes(current.orderId)
+            ? { ...current, status: "Processing" }
+            : current
+        );
+      }
+    } catch (statusError) {
+      console.error("Automatic Processing status update failed:", statusError);
     }
 
     const itemsHtml = printItems
@@ -493,7 +560,11 @@ useEffect(() => {
             <div class="crop-mark bottom-right"></div>
 
             <div class="magnet-image-61mm">
-              <img src="${item.photoUrl || item.originalPhotoUrl || "/logo.png"}" alt="${item.orderId}" />
+              <img
+                src="${item.photoUrl || item.originalPhotoUrl || "/logo.png"}"
+                alt="${item.orderId}"
+                style="filter: brightness(${getBrightness(item.orderId)}%);"
+              />
             </div>
           </div>
           <span class="token-label">${item.token || item.orderId} (52mm finished / 61mm artwork)</span>
@@ -513,7 +584,7 @@ useEffect(() => {
             body { margin: 0; padding: 0; background: #fff; font-family: system-ui, -apple-system, sans-serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
             .print-grid { display: grid; grid-template-columns: repeat(3, 61mm); grid-auto-rows: 68mm; column-gap: 5mm; row-gap: 5mm; justify-content: center; align-content: start; }
             .print-item { display: flex; flex-direction: column; align-items: center; justify-content: flex-start; page-break-inside: avoid; }
-            .cut-box-61mm { width:61mm; height: 61mm; position: relative; box-sizing: border-box; background: #fff; border: none; overflow: visible; } }
+            .cut-box-61mm { width:61mm; height: 61mm; position: relative; box-sizing: border-box; background: #fff; border: 0.3mm solid #111; border-radius: 5.5mm; overflow: visible; }
             .crop-mark { position: absolute; width: 3.5mm; height: 3.5mm; }
             .crop-mark.top-left { top: -1px; left: -1px; border-top: 0.4mm solid #111; border-left: 0.4mm solid #111; }
             .crop-mark.top-right { top: -1px; right: -1px; border-top: 0.4mm solid #111; border-right: 0.4mm solid #111; }
@@ -529,6 +600,7 @@ useEffect(() => {
   align-items: center;
   justify-content: center;
   box-sizing: border-box;
+  border-radius: 5.5mm;
 }
 
 .magnet-image-61mm img {
@@ -838,8 +910,8 @@ useEffect(() => {
             >
               ⚡ Select Next 9 Ready
             </button>
-            <button type="button" className="btn-batch-print" onClick={handlePrintBatch}>
-              🖨️ Print 9-Up A4 Sheet ({selectedIds.length})
+            <button type="button" className="btn-batch-print" onClick={() => { void handlePrintBatch(); }} disabled={isPrinting}>
+              {isPrinting ? "🖨️ Printing…" : `🖨️ Print 9-Up A4 Sheet (${selectedIds.length})`}
             </button>
             <button type="button" className="btn-clear-select" onClick={() => setSelectedIds([])}>
               Clear Selection
@@ -962,6 +1034,16 @@ useEffect(() => {
                         <option value="Ready">Ready</option>
                         <option value="Completed">Completed</option>
                       </select>
+                      {ord.status === "Processing" && (
+                        <button
+                          type="button"
+                          className="quick-action-btn"
+                          style={{ marginTop: 6, background: "#dcfce7", color: "#166534", fontWeight: 800 }}
+                          onClick={() => { void handleStatusChange(ord.orderId, "Ready"); }}
+                        >
+                          ✓ Mark Ready
+                        </button>
+                      )}
                     </td>
                     <td>
                       <div style={{ display: "flex", gap: "6px" }}>
@@ -987,10 +1069,11 @@ useEffect(() => {
                           title="Print Magnet"
                           onClick={() => {
                             setSelectedIds([ord.orderId]);
-                            setTimeout(handlePrintBatch, 50);
+                            void handlePrintBatch([ord.orderId]);
                           }}
+                          disabled={isPrinting}
                         >
-                          🖨️
+                          {isPrinting ? "Printing…" : "🖨️"}
                         </button>
 
                                                 <button
@@ -1036,6 +1119,7 @@ useEffect(() => {
                   src={viewingOrder.photoUrl || viewingOrder.originalPhotoUrl || "/logo.png"}
                   alt="Product preview"
                   className="modal-preview-img"
+                  style={{ filter: `brightness(${getBrightness(viewingOrder.orderId)}%)` }}
                 />
                 {viewingOrder.productId === "keychain" && viewingOrder.photoBackUrl && (
                   <img
@@ -1045,6 +1129,37 @@ useEffect(() => {
                     style={{ marginTop: "10px" }}
                   />
                 )}
+                <div className="brightness-control">
+                  <div className="brightness-control-header">
+                    <label htmlFor="studio-brightness">☀️ Print Brightness</label>
+                    <strong>{getBrightness(viewingOrder.orderId)}%</strong>
+                  </div>
+                  <input
+                    id="studio-brightness"
+                    type="range"
+                    min="70"
+                    max="130"
+                    step="1"
+                    value={getBrightness(viewingOrder.orderId)}
+                    onChange={(e) =>
+                      setOrderBrightness(viewingOrder.orderId, Number(e.target.value))
+                    }
+                    style={{
+                      filter: `brightness(${getBrightness(viewingOrder.orderId)}%)`,
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="brightness-reset-btn"
+                    onClick={() => setOrderBrightness(viewingOrder.orderId, 100)}
+                  >
+                    Reset to 100%
+                  </button>
+                  <p className="brightness-help">
+                    This adjustment is used for printing only. The customer's original photo is not changed.
+                  </p>
+                </div>
+
                 <div className="modal-img-meta">
                   <span>{viewingOrder.productId === "circle" ? "59mm face · 71mm total" : viewingOrder.productId === "keychain" ? "36mm keychain · front + back" : "52mm × 52mm face · 61mm total"}</span>
                   {viewingOrder.productId === "keychain" && viewingOrder.keychainStrap && (
@@ -1106,12 +1221,14 @@ useEffect(() => {
                 type="button"
                 className="action-btn single-print-btn"
                 onClick={() => {
-                  setSelectedIds([viewingOrder.orderId]);
+                  const orderId = viewingOrder.orderId;
+                  setSelectedIds([orderId]);
                   setViewingOrder(null);
-                  setTimeout(handlePrintBatch, 50);
+                  void handlePrintBatch([orderId]);
                 }}
+                disabled={isPrinting}
               >
-                🖨️ Print This Magnet
+                {isPrinting ? "🖨️ Printing…" : "🖨️ Print This Magnet"}
               </button>
 
               <a
@@ -1633,6 +1750,55 @@ useEffect(() => {
           object-fit: contain;
           border-radius: 8px;
           box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        }
+        .brightness-control {
+          width: 100%;
+          margin-top: 14px;
+          padding: 12px 14px;
+          border: 1px solid #e2e8f0;
+          border-radius: 12px;
+          background: #ffffff;
+        }
+        .brightness-control-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+          margin-bottom: 8px;
+        }
+        .brightness-control-header label {
+          font-size: 12px;
+          font-weight: 900;
+          color: #334155;
+        }
+        .brightness-control-header strong {
+          font-size: 12px;
+          font-weight: 900;
+          color: #7048d8;
+          min-width: 42px;
+          text-align: right;
+        }
+        .brightness-control input[type="range"] {
+          width: 100%;
+          accent-color: #7048d8;
+          cursor: pointer;
+        }
+        .brightness-reset-btn {
+          margin-top: 7px;
+          border: 1px solid #cbd5e1;
+          background: #f8fafc;
+          color: #334155;
+          border-radius: 7px;
+          padding: 5px 9px;
+          font-size: 10px;
+          font-weight: 800;
+          cursor: pointer;
+        }
+        .brightness-help {
+          margin: 7px 0 0;
+          font-size: 10px;
+          line-height: 1.35;
+          color: #64748b;
         }
         .modal-img-meta {
           margin-top: 8px;

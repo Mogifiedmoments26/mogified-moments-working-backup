@@ -3,8 +3,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Brand } from "../../../components/Brand";
 import { listOrders } from "../../../lib/orders";
-import { db, firebaseConfigured } from "../../../lib/firebase";
-import { collection, doc, getDocs, query, updateDoc, where } from "firebase/firestore";
 import { savePhoto } from "../../../lib/storage";
 
 const loadRazorpayScript = () => {
@@ -43,13 +41,45 @@ export default function PartyHubPage() {
   }>({});
 
   const [
-    frameUploading,
-    setFrameUploading,
-  ] = useState<string | null>(null);
+    brightnessAdjustments,
+    setBrightnessAdjustments,
+  ] = useState<{
+    [photoKey: string]: number;
+  }>({});
+
+  function getPhotoBrightness(
+    orderId: string,
+    photoIndex: number
+  ) {
+    return (
+      brightnessAdjustments[
+        `${orderId}-${photoIndex}`
+      ] ?? 100
+    );
+  }
+
+  function setPhotoBrightness(
+    orderId: string,
+    photoIndex: number,
+    value: number
+  ) {
+    const nextValue = Math.max(
+      70,
+      Math.min(130, Math.round(value))
+    );
+
+    setBrightnessAdjustments(
+      (current) => ({
+        ...current,
+        [`${orderId}-${photoIndex}`]:
+          nextValue,
+      })
+    );
+  }
 
   const [
-    backgroundUploading,
-    setBackgroundUploading,
+    frameUploading,
+    setFrameUploading,
   ] = useState<string | null>(null);
 
   const [
@@ -73,12 +103,12 @@ export default function PartyHubPage() {
     setPhotoDownloadBusy,
   ] = useState<string | null>(null);
 
-  const frameInputRefs =
-    useRef<{
-      [orderId: string]: HTMLInputElement | null;
-    }>({});
+  const [
+    printBusyOrderId,
+    setPrintBusyOrderId,
+  ] = useState<string | null>(null);
 
-  const backgroundInputRefs =
+  const frameInputRefs =
     useRef<{
       [orderId: string]: HTMLInputElement | null;
     }>({});
@@ -403,12 +433,59 @@ export default function PartyHubPage() {
   }
 
   // ---------------------------------------------------------
+  // MARK PARTY ORDER READY
+  // ---------------------------------------------------------
+
+  async function handleMarkPartyReady(order: any) {
+    if (String(order.status || "").trim().toLowerCase() !== "processing") {
+      return;
+    }
+
+    try {
+      const statusRes = await fetch(
+        "/api/orders",
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            orderId: order.orderId,
+            status: "Ready",
+          }),
+        }
+      );
+
+      if (!statusRes.ok) {
+        throw new Error("Could not update party order status to Ready.");
+      }
+
+      setOrders((current) =>
+        current.map((item) =>
+          item.orderId === order.orderId
+            ? { ...item, status: "Ready" }
+            : item
+        )
+      );
+    } catch (error) {
+      console.error("Failed updating party order to Ready:", error);
+      alert("Could not mark this party order as Ready. Please try again.");
+    }
+  }
+
+  // ---------------------------------------------------------
   // PRINT PARTY PHOTOS
   // ---------------------------------------------------------
 
-  function handleBatchPrintPartyPhotos(
+  async function handleBatchPrintPartyPhotos(
     order: any
   ) {
+    if (printBusyOrderId === order.orderId) {
+      return;
+    }
+
+    setPrintBusyOrderId(order.orderId);
+
     const selectedIndices =
       selectedPhotoMap[
         order.orderId
@@ -428,11 +505,19 @@ export default function PartyHubPage() {
     const targetPhotos =
       selectedIndices.length > 0
         ? selectedIndices
-            .map(
-              (i) => photos[i]
+            .map((i) => ({
+              src: photos[i],
+              index: i,
+            }))
+            .filter(
+              (item) => Boolean(item.src)
             )
-            .filter(Boolean)
-        : photos;
+        : photos.map(
+            (src: string, index: number) => ({
+              src,
+              index,
+            })
+          );
 
     if (
       targetPhotos.length === 0
@@ -440,6 +525,7 @@ export default function PartyHubPage() {
       alert(
         "No photos selected or available to print."
       );
+      setPrintBusyOrderId(null);
       return;
     }
 
@@ -451,8 +537,61 @@ export default function PartyHubPage() {
       );
 
     if (!printWin) {
+      setPrintBusyOrderId(null);
       window.print();
       return;
+    }
+
+    // Prevent accidental double-print clicks while the print job is being opened.
+    window.setTimeout(() => {
+      setPrintBusyOrderId((current) =>
+        current === order.orderId ? null : current
+      );
+    }, 3000);
+
+    // The print window successfully opened, so mark the
+    // party order as Processing. This does not mark it
+    // Completed; that remains a manual step after the
+    // physical magnets are produced.
+    try {
+      const statusRes = await fetch(
+        "/api/orders",
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          body: JSON.stringify({
+            orderId:
+              order.orderId,
+            status: "Processing",
+          }),
+        }
+      );
+
+      if (!statusRes.ok) {
+        console.error(
+          "Could not automatically update party order status to Processing."
+        );
+      } else {
+        setOrders((current) =>
+          current.map((item) =>
+            item.orderId ===
+            order.orderId
+              ? {
+                  ...item,
+                  status: "Processing",
+                }
+              : item
+          )
+        );
+      }
+    } catch (statusError) {
+      console.error(
+        "Automatic Processing status update failed:",
+        statusError
+      );
     }
 
     const tokenLabel =
@@ -503,7 +642,10 @@ export default function PartyHubPage() {
               overflow: hidden;
               page-break-inside: avoid;
               box-sizing: border-box;
-                     }
+              /* 61mm artwork + bleed alignment boundary. */
+              border: 0.3mm solid #000;
+              border-radius: 3.5mm;
+            }
 
             .cell img {
               position: absolute;
@@ -545,11 +687,15 @@ export default function PartyHubPage() {
           <div class="grid">
             ${targetPhotos
               .map(
-                (src: string) => `
+                (item: { src: string; index: number }) => `
                   <div class="cell">
                     <img
-                      src="${src}"
+                      src="${item.src}"
                       alt=""
+                      style="filter: brightness(${getPhotoBrightness(
+                        order.orderId,
+                        item.index
+                      )}%);"
                     />
 
                     <div
@@ -718,121 +864,6 @@ export default function PartyHubPage() {
     orderId: string
   ) {
     frameInputRefs.current[
-      orderId
-    ]?.click();
-  }
-
-  // ---------------------------------------------------------
-  // PARTY-WIDE CUSTOM BACKGROUND
-  // ---------------------------------------------------------
-
-  async function handleBackgroundUpload(
-    order: any,
-    file: File
-  ) {
-    if (!file.type.startsWith("image/")) {
-      alert("Please select an image file for the party background.");
-      return;
-    }
-
-    setBackgroundUploading(order.orderId);
-
-    try {
-      const reader = new FileReader();
-
-      const dataUrl = await new Promise<string>(
-        (resolve, reject) => {
-          reader.onload = () =>
-            resolve(String(reader.result));
-
-          reader.onerror = () =>
-            reject(
-              new Error(
-                "Could not read the background file."
-              )
-            );
-
-          reader.readAsDataURL(file);
-        }
-      );
-
-      const storageUrl = await savePhoto(
-        dataUrl,
-        order.orderId,
-        "party-custom-background.png"
-      );
-
-      if (!firebaseConfigured || !db) {
-        throw new Error(
-          "Firebase is not connected, so the party background could not be saved."
-        );
-      }
-
-      const ordersCol = collection(db, "orders");
-      const snapshot = await getDocs(
-        query(
-          ordersCol,
-          where("orderId", "==", order.orderId)
-        )
-      );
-
-      if (snapshot.empty) {
-        throw new Error(
-          "Could not find the party order in Firestore."
-        );
-      }
-
-      const orderRef = doc(
-        db,
-        "orders",
-        snapshot.docs[0].id
-      );
-
-      await updateDoc(orderRef, {
-        customBackgroundRequested: true,
-        customBackgroundNotes:
-          order.customBackgroundNotes ||
-          "Custom background uploaded by studio.",
-        customBackgroundUrl: storageUrl,
-      });
-
-      setOrders((prev) =>
-        prev.map((o) =>
-          o.orderId === order.orderId
-            ? {
-                ...o,
-                customBackgroundRequested: true,
-                customBackgroundUrl: storageUrl,
-                customBackgroundNotes:
-                  o.customBackgroundNotes ||
-                  "Custom background uploaded by studio.",
-              }
-            : o
-        )
-      );
-
-      alert(
-        "Party background saved. This custom background is now attached to the whole party order."
-      );
-    } catch (err: any) {
-      console.error(
-        "Party background upload error:",
-        err
-      );
-
-      alert(
-        err?.message ||
-          "Could not upload the party background."
-      );
-    } finally {
-      setBackgroundUploading(null);
-    }
-  }
-
-  function triggerBackgroundPicker(
-    orderId: string
-  ) {
-    backgroundInputRefs.current[
       orderId
     ]?.click();
   }
@@ -1641,7 +1672,6 @@ export default function PartyHubPage() {
           <p>
             Guest uploads,
             custom event frame,
-            custom background,
             printing &amp;
             payment tracking
           </p>
@@ -1774,28 +1804,6 @@ export default function PartyHubPage() {
                     (String(order.frameName || "").toLowerCase().startsWith("custom requested:")
                       ? String(order.frameName).replace(/^custom requested:\s*/i, "")
                       : "")
-                ).trim();
-
-              const customBackgroundRequested =
-                order.customBackgroundRequested === true ||
-                String(order.customBackgroundRequested || "").toLowerCase() === "true" ||
-                Boolean(
-                  order.customBackgroundNotes ||
-                    order.customBackgroundDescription ||
-                    order.customBackgroundRequestDescription
-                );
-
-              const customBackgroundDescription =
-                String(
-                  order.customBackgroundNotes ||
-                    order.customBackgroundDescription ||
-                    order.customBackgroundRequestDescription ||
-                    ""
-                ).trim();
-
-              const customBackgroundUrl =
-                String(
-                  order.customBackgroundUrl || ""
                 ).trim();
 
               const productId = String(
@@ -1940,35 +1948,6 @@ export default function PartyHubPage() {
                             {String(frameValue)}
                           </div>
                         )}
-
-                        <div>
-                          <strong>Custom Background Requested:</strong>{" "}
-                          {customBackgroundRequested ? "Yes" : "No"}
-                        </div>
-
-                        {customBackgroundRequested && (
-                          <div
-                            style={{
-                              color: "#166534",
-                              marginTop: "2px",
-                            }}
-                          >
-                            <strong>Custom Background Description:</strong>{" "}
-                            {customBackgroundDescription || "No description provided"}
-                          </div>
-                        )}
-
-                        {customBackgroundUrl && (
-                          <div
-                            style={{
-                              wordBreak: "break-all",
-                              color: "#166534",
-                            }}
-                          >
-                            <strong>Applied Custom Background:</strong>{" "}
-                            Saved to Firebase Storage
-                          </div>
-                        )}
                       </div>
                     </div>
 
@@ -2008,17 +1987,30 @@ export default function PartyHubPage() {
                           )
                         }
                         disabled={
-                          photos.length ===
-                          0
+                          photos.length === 0 ||
+                          printBusyOrderId === order.orderId
                         }
                       >
-                        🖨️ Print Selected (
-                        {selectedIndices.length >
-                        0
-                          ? selectedIndices.length
-                          : photos.length}
-                        )
+                        {printBusyOrderId === order.orderId
+                          ? "⏳ Printing..."
+                          : `🖨️ Print Selected (${
+                              selectedIndices.length > 0
+                                ? selectedIndices.length
+                                : photos.length
+                            })`}
                       </button>
+
+                      {String(order.status || "").trim().toLowerCase() === "processing" && (
+                        <button
+                          type="button"
+                          className="button secondary"
+                          onClick={() =>
+                            handleMarkPartyReady(order)
+                          }
+                        >
+                          ✓ Mark Ready
+                        </button>
+                      )}
                     </div>
                   </div>
 
@@ -2234,114 +2226,6 @@ export default function PartyHubPage() {
                   </div>
 
                   {/* --------------------------------------- */}
-                  {/* PARTY BACKGROUND */}
-                  {/* --------------------------------------- */}
-
-                  <div className="background-section">
-                    <div className="background-section-header">
-                      <div>
-                        <h3>🌄 Party-Wide Background</h3>
-                        <p>
-                          Upload or replace the custom background once.
-                          All guests use this background.
-                        </p>
-                      </div>
-
-                      <div>
-                        <input
-                          ref={(el) => {
-                            backgroundInputRefs.current[
-                              order.orderId
-                            ] = el;
-                          }}
-                          type="file"
-                          accept="image/*"
-                          hidden
-                          onChange={(e) => {
-                            const file =
-                              e.target.files?.[0];
-
-                            if (file) {
-                              handleBackgroundUpload(
-                                order,
-                                file
-                              );
-                            }
-
-                            e.target.value = "";
-                          }}
-                        />
-
-                        <button
-                          type="button"
-                          className="button primary"
-                          onClick={() =>
-                            triggerBackgroundPicker(
-                              order.orderId
-                            )
-                          }
-                          disabled={
-                            backgroundUploading ===
-                            order.orderId
-                          }
-                        >
-                          {backgroundUploading ===
-                          order.orderId
-                            ? "Uploading..."
-                            : customBackgroundUrl
-                            ? "🔄 Replace Background"
-                            : "🌄 Upload Custom Background"}
-                        </button>
-                      </div>
-                    </div>
-
-                    {customBackgroundUrl ? (
-                      <div className="background-preview-row">
-                        <div className="background-preview">
-                          <img
-                            src={customBackgroundUrl}
-                            alt="Party custom background"
-                          />
-                        </div>
-
-                        <div className="background-status">
-                          <strong>
-                            ✓ Custom background active
-                          </strong>
-
-                          <span>
-                            This background is attached to
-                            the whole party order.
-                          </span>
-
-                          {customBackgroundDescription && (
-                            <span>
-                              <strong>Request:</strong>{" "}
-                              {customBackgroundDescription}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="background-empty">
-                        {customBackgroundRequested
-                          ? (
-                            <>
-                              <strong>
-                                Custom background requested.
-                              </strong>{" "}
-                              Upload the finished background above.
-                              {customBackgroundDescription
-                                ? ` Request: ${customBackgroundDescription}`
-                                : ""}
-                            </>
-                          )
-                          : "No custom party background uploaded yet."}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* --------------------------------------- */}
                   {/* GUEST PHOTOS */}
                   {/* --------------------------------------- */}
 
@@ -2349,6 +2233,23 @@ export default function PartyHubPage() {
                     <h3>
                       Guest Uploads Stream ({photosReceived} received / {magnetsIncluded} included)
                     </h3>
+
+                    <p
+                      style={{
+                        margin:
+                          "0 0 10px",
+                        fontSize:
+                          "11px",
+                        color:
+                          "#64748b",
+                      }}
+                    >
+                      Adjust brightness for
+                      individual photos before
+                      batch printing. These
+                      adjustments are for this
+                      Party Hub session only.
+                    </p>
 
                     {photos.length ===
                     0 ? (
@@ -2399,7 +2300,13 @@ export default function PartyHubPage() {
                                   }`}
                                 />
 
-                                <div className="thumb-box">
+                                <div
+                                  className="thumb-box"
+                                  style={{
+                                    position:
+                                      "relative",
+                                  }}
+                                >
                                   <img
                                     src={
                                       imgSrc
@@ -2407,6 +2314,12 @@ export default function PartyHubPage() {
                                     alt={`Upload ${
                                       i + 1
                                     }`}
+                                    style={{
+                                      filter: `brightness(${getPhotoBrightness(
+                                        order.orderId,
+                                        i
+                                      )}%)`,
+                                    }}
                                   />
                                 </div>
 
@@ -2428,6 +2341,100 @@ export default function PartyHubPage() {
                                       ? "✓ Done (Printed)"
                                       : "✨ New Upload"}
                                   </span>
+                                  <div
+                                    style={{
+                                      display:
+                                        "flex",
+                                      alignItems:
+                                        "center",
+                                      gap: "8px",
+                                      marginTop:
+                                        "7px",
+                                      flexWrap:
+                                        "wrap",
+                                    }}
+                                  >
+                                    <span
+                                      style={{
+                                        fontSize:
+                                          "11px",
+                                        fontWeight:
+                                          800,
+                                        color:
+                                          "#64748b",
+                                      }}
+                                    >
+                                      Brightness{" "}
+                                      {getPhotoBrightness(
+                                        order.orderId,
+                                        i
+                                      )}%
+                                    </span>
+
+                                    <input
+                                      type="range"
+                                      min="70"
+                                      max="130"
+                                      step="1"
+                                      value={getPhotoBrightness(
+                                        order.orderId,
+                                        i
+                                      )}
+                                      onChange={(
+                                        event
+                                      ) =>
+                                        setPhotoBrightness(
+                                          order.orderId,
+                                          i,
+                                          Number(
+                                            event
+                                              .target
+                                              .value
+                                          )
+                                        )
+                                      }
+                                      aria-label={`Brightness for photo ${
+                                        i + 1
+                                      }`}
+                                      style={{
+                                        width:
+                                          "105px",
+                                        accentColor:
+                                          "#7048d8",
+                                      }}
+                                    />
+
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setPhotoBrightness(
+                                          order.orderId,
+                                          i,
+                                          100
+                                        )
+                                      }
+                                      style={{
+                                        border:
+                                          "1px solid #d8c8ee",
+                                        background:
+                                          "#faf7ff",
+                                        color:
+                                          "#7048d8",
+                                        borderRadius:
+                                          "8px",
+                                        padding:
+                                          "4px 8px",
+                                        fontSize:
+                                          "10px",
+                                        fontWeight:
+                                          900,
+                                        cursor:
+                                          "pointer",
+                                      }}
+                                    >
+                                      Reset
+                                    </button>
+                                  </div>
                                 </div>
 
                                 <button
@@ -3015,93 +3022,6 @@ export default function PartyHubPage() {
           border: 1px dashed #cbd5e1;
           color: #94a3b8;
           font-size: 12px;
-          text-align: center;
-        }
-
-        /* ----------------------------------------------- */
-        /* BACKGROUND */
-        /* ----------------------------------------------- */
-
-        .background-section {
-          border: 1px solid #dbeafe;
-          background: #f8fbff;
-          border-radius: 16px;
-          padding: 15px;
-          margin-bottom: 18px;
-        }
-
-        .background-section-header {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          gap: 15px;
-          margin-bottom: 12px;
-        }
-
-        .background-section-header h3 {
-          margin: 0;
-          font-size: 14px;
-          color: #334155;
-        }
-
-        .background-section-header p {
-          margin: 3px 0 0;
-          font-size: 11px;
-          color: #64748b;
-        }
-
-        .background-preview-row {
-          display: flex;
-          align-items: center;
-          gap: 14px;
-          padding-top: 10px;
-          border-top: 1px solid #dbeafe;
-        }
-
-        .background-preview {
-          width: 150px;
-          height: 90px;
-          border-radius: 12px;
-          background: #fff;
-          border: 1px solid #bfdbfe;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          overflow: hidden;
-          flex-shrink: 0;
-        }
-
-        .background-preview img {
-          width: 100%;
-          height: 100%;
-          object-fit: cover;
-        }
-
-        .background-status {
-          display: flex;
-          flex-direction: column;
-          gap: 5px;
-        }
-
-        .background-status strong {
-          font-size: 13px;
-          color: #15803d;
-        }
-
-        .background-status span {
-          font-size: 11px;
-          color: #64748b;
-          line-height: 1.5;
-        }
-
-        .background-empty {
-          padding: 12px;
-          border-radius: 10px;
-          background: #fff;
-          border: 1px dashed #bfdbfe;
-          color: #64748b;
-          font-size: 12px;
-          line-height: 1.5;
           text-align: center;
         }
 

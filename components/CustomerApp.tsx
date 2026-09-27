@@ -2524,6 +2524,180 @@ function MagnetCropper({
   );
 }
 
+/*
+ * Preview performance helpers.
+ *
+ * The expensive IMG.LY background-removal step is cached per uploaded
+ * photo. Changing between Birthday / Wedding / Goa / etc. therefore
+ * re-composites the already-cut-out photo instead of running the AI
+ * model again for every background selection.
+ */
+const customerPreviewCutoutCache = new Map<string, Promise<string>>();
+const customerPreviewImageCache = new Map<string, Promise<HTMLImageElement>>();
+
+function loadCustomerPreviewImage(src: string): Promise<HTMLImageElement> {
+  const cached = customerPreviewImageCache.get(src);
+  if (cached) return cached;
+
+  const promise = new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.crossOrigin = "anonymous";
+    image.onload = () => resolve(image);
+    image.onerror = reject;
+    image.src = src;
+  });
+
+  customerPreviewImageCache.set(src, promise);
+  return promise;
+}
+
+function getCustomerPreviewCutout(photo: string): Promise<string> {
+  const cached = customerPreviewCutoutCache.get(photo);
+  if (cached) return cached;
+
+  const promise = (async () => {
+    const { removeBackground } = await import("@imgly/background-removal");
+
+    const blob = await removeBackground(photo, {
+      model: "isnet_fp16",
+      output: {
+        format: "image/png",
+        quality: 1,
+      },
+    });
+
+    return URL.createObjectURL(blob);
+  })();
+
+  customerPreviewCutoutCache.set(photo, promise);
+  promise.catch(() => customerPreviewCutoutCache.delete(photo));
+  return promise;
+}
+
+function renderCustomerThemedPreview({
+  photo,
+  foregroundSrc,
+  frameSrc,
+  backgroundSrc,
+  cropPixels,
+  shape,
+}: {
+  photo: string;
+  foregroundSrc: string | null;
+  frameSrc: string | null;
+  backgroundSrc: string;
+  cropPixels?: CropPixels | null;
+  shape: "square" | "circle";
+}): Promise<string> {
+  return (async () => {
+    const isCircle = shape === "circle";
+    const fullSize = isCircle ? 1397 : 1200;
+    const faceSize = isCircle
+      ? Math.round(fullSize * (59 / 71))
+      : Math.round(fullSize * (52 / 61));
+    const offset = Math.round((fullSize - faceSize) / 2);
+
+    const canvas = document.createElement("canvas");
+    canvas.width = fullSize;
+    canvas.height = fullSize;
+
+    const ctx = canvas.getContext("2d", { colorSpace: "srgb" });
+    if (!ctx) throw new Error("Could not create preview canvas.");
+
+    const [backgroundImg, photoImg] = await Promise.all([
+      loadCustomerPreviewImage(backgroundSrc),
+      loadCustomerPreviewImage(foregroundSrc || photo),
+    ]);
+
+    const frameImg = frameSrc
+      ? await loadCustomerPreviewImage(frameSrc).catch(() => null)
+      : null;
+
+    const drawPhoto = () => {
+      const imageToDraw = photoImg;
+
+      if (cropPixels && cropPixels.width > 0 && cropPixels.height > 0) {
+        ctx.drawImage(
+          imageToDraw,
+          Math.round(cropPixels.x),
+          Math.round(cropPixels.y),
+          Math.round(cropPixels.width),
+          Math.round(cropPixels.height),
+          offset,
+          offset,
+          faceSize,
+          faceSize
+        );
+      } else {
+        const scale = Math.max(
+          faceSize / imageToDraw.width,
+          faceSize / imageToDraw.height
+        );
+        const w = imageToDraw.width * scale;
+        const h = imageToDraw.height * scale;
+
+        ctx.drawImage(
+          imageToDraw,
+          offset + (faceSize - w) / 2,
+          offset + (faceSize - h) / 2,
+          w,
+          h
+        );
+      }
+    };
+
+    if (isCircle) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(
+        offset + faceSize / 2,
+        offset + faceSize / 2,
+        faceSize / 2,
+        0,
+        Math.PI * 2
+      );
+      ctx.clip();
+
+      ctx.drawImage(backgroundImg, offset, offset, faceSize, faceSize);
+      drawPhoto();
+
+      if (frameImg) {
+        ctx.drawImage(frameImg, offset, offset, faceSize, faceSize);
+      }
+
+      ctx.restore();
+    } else {
+      ctx.drawImage(backgroundImg, offset, offset, faceSize, faceSize);
+      drawPhoto();
+
+      if (frameImg) {
+        ctx.drawImage(frameImg, offset, offset, faceSize, faceSize);
+      }
+    }
+
+    ctx.save();
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.15)";
+    ctx.lineWidth = 1;
+
+    if (isCircle) {
+      ctx.beginPath();
+      ctx.arc(
+        offset + faceSize / 2,
+        offset + faceSize / 2,
+        faceSize / 2,
+        0,
+        Math.PI * 2
+      );
+      ctx.stroke();
+    } else {
+      ctx.strokeRect(offset, offset, faceSize, faceSize);
+    }
+
+    ctx.restore();
+    return canvas.toDataURL("image/png");
+  })();
+}
+
 function MagnetPreviewInline({
   photo,
   frame,
@@ -2543,7 +2717,11 @@ function MagnetPreviewInline({
   small?: boolean;
   product?: ProductId | "leather_name_keychain";
 }) {
-  const isCircle = product === "circle" || product === "keychain" || (product as string) === "leather_name_keychain";
+  const isCircle =
+    product === "circle" ||
+    product === "keychain" ||
+    (product as string) === "leather_name_keychain";
+
   const [themedPreviewSrc, setThemedPreviewSrc] = useState<string | null>(null);
   const [isCreatingThemedPreview, setIsCreatingThemedPreview] = useState(false);
 
@@ -2558,45 +2736,60 @@ function MagnetPreviewInline({
       };
     }
 
-    /*
-     * Background removal is the expensive part of the preview.
-     * Do not run it on every crop/zoom update. Wait until the user
-     * has stopped moving the crop for a short moment, then generate
-     * one fresh themed preview.
-     */
-    const timer = window.setTimeout(() => {
-      if (cancelled) return;
+    const background = BACKGROUNDS.find((item) => item.id === backgroundId);
 
-      setIsCreatingThemedPreview(true);
+    if (!background) {
+      setThemedPreviewSrc(null);
+      setIsCreatingThemedPreview(false);
+      return () => {
+        cancelled = true;
+      };
+    }
 
-      createFinalMagnetImage({
-        photo,
-        frameSrc: frame?.src ?? null,
-        cropPixels: cropPixels ?? null,
-        shape: isCircle ? "circle" : "square",
-        backgroundId,
+    const backgroundSrc = isCircle ? background.circleSrc : background.squareSrc;
+
+    /* Render immediately with the original photo so selecting a background feels instant. */
+    renderCustomerThemedPreview({
+      photo,
+      foregroundSrc: null,
+      frameSrc: frame?.src ?? null,
+      backgroundSrc,
+      cropPixels: cropPixels ?? null,
+      shape: isCircle ? "circle" : "square",
+    })
+      .then((src) => {
+        if (!cancelled) setThemedPreviewSrc(src);
       })
-        .then((src) => {
-          if (!cancelled) {
-            setThemedPreviewSrc(src);
-          }
+      .catch((error) => {
+        console.error("Immediate themed preview failed:", error);
+      });
+
+    /* Run AI only once for this uploaded photo; all background changes reuse the cutout. */
+    setIsCreatingThemedPreview(true);
+
+    getCustomerPreviewCutout(photo)
+      .then((foregroundSrc) =>
+        renderCustomerThemedPreview({
+          photo,
+          foregroundSrc,
+          frameSrc: frame?.src ?? null,
+          backgroundSrc,
+          cropPixels: cropPixels ?? null,
+          shape: isCircle ? "circle" : "square",
         })
-        .catch((error) => {
-          console.error("Themed live preview failed:", error);
-          if (!cancelled) {
-            setThemedPreviewSrc(null);
-          }
-        })
-        .finally(() => {
-          if (!cancelled) {
-            setIsCreatingThemedPreview(false);
-          }
-        });
-    }, 800);
+      )
+      .then((src) => {
+        if (!cancelled) setThemedPreviewSrc(src);
+      })
+      .catch((error) => {
+        console.error("Themed live preview failed:", error);
+      })
+      .finally(() => {
+        if (!cancelled) setIsCreatingThemedPreview(false);
+      });
 
     return () => {
       cancelled = true;
-      window.clearTimeout(timer);
     };
   }, [photo, backgroundId, frame?.src, cropPixels, isCircle]);
 
@@ -2643,6 +2836,26 @@ function MagnetPreviewInline({
             }}
           >
             {customWatermark}
+          </div>
+        )}
+
+        {isCreatingThemedPreview && backgroundId && (
+          <div
+            style={{
+              position: "absolute",
+              right: "8px",
+              bottom: "8px",
+              zIndex: 10,
+              padding: "4px 7px",
+              borderRadius: "999px",
+              background: "rgba(255,255,255,0.9)",
+              color: "#7048d8",
+              fontSize: "10px",
+              fontWeight: 800,
+              boxShadow: "0 2px 8px rgba(0,0,0,0.12)",
+            }}
+          >
+            Preparing cutout…
           </div>
         )}
       </div>
