@@ -40,8 +40,6 @@ export default function Studio({ onLogout }: StudioProps) {
 
   const prevOrderCount = useRef<number>(0);
   const audioContextRef = useRef<AudioContext | null>(null);
-  const printLockRef = useRef(false);
-  const [isPrinting, setIsPrinting] = useState(false);
 
   function playChimeSound() {
     try {
@@ -484,27 +482,18 @@ useEffect(() => {
     }));
   }
 
-  async function handlePrintBatch(orderIds: string[] = selectedIds) {
-    if (printLockRef.current) return;
-    if (orderIds.length === 0) {
+  async function handlePrintBatch() {
+    if (selectedIds.length === 0) {
       alert("Please select at least 1 order to print.");
       return;
     }
 
-    const printItems = orders.filter((o) => orderIds.includes(o.orderId));
+    const printItems = orders.filter((o) => selectedIds.includes(o.orderId));
     const printWindow = window.open("", "_blank");
     if (!printWindow) {
       alert("Please allow popups to open print sheets.");
       return;
     }
-
-    printLockRef.current = true;
-    setIsPrinting(true);
-    // Prevent duplicate clicks while opening the print sheet; this is not a physical printer completion signal.
-    window.setTimeout(() => {
-      printLockRef.current = false;
-      setIsPrinting(false);
-    }, 3000);
 
     // The browser cannot detect when the physical printer has finished.
     // Mark the selected orders as Processing once the print window is successfully opened.
@@ -549,16 +538,21 @@ useEffect(() => {
       console.error("Automatic Processing status update failed:", statusError);
     }
 
-    const itemsHtml = printItems
+    const squareMagnetItems = printItems.filter(
+      (item) => item.productId !== "keychain" && item.productId !== "circle"
+    );
+    const circleMagnetItems = printItems.filter((item) => item.productId === "circle");
+    const keychainItems = printItems.filter((item) => item.productId === "keychain");
+
+    const squareMagnetItemsHtml = squareMagnetItems
       .map(
         (item) => `
-        <div class="print-item">
+        <div class="print-item square-magnet-print-grid-item">
           <div class="cut-box-61mm">
             <div class="crop-mark top-left"></div>
             <div class="crop-mark top-right"></div>
             <div class="crop-mark bottom-left"></div>
             <div class="crop-mark bottom-right"></div>
-
             <div class="magnet-image-61mm">
               <img
                 src="${item.photoUrl || item.originalPhotoUrl || "/logo.png"}"
@@ -573,6 +567,70 @@ useEffect(() => {
       )
       .join("");
 
+    const circleMagnetItemsHtml = circleMagnetItems
+      .map(
+        (item) => `
+        <div class="print-item circle-magnet-print-grid-item">
+          <div class="circle-magnet-bleed-box">
+            <div class="circle-magnet-artwork">
+              <img
+                src="${item.photoUrl || item.originalPhotoUrl || "/logo.png"}"
+                alt="${item.orderId}"
+                style="filter: brightness(${getBrightness(item.orderId)}%);"
+              />
+            </div>
+            <div class="circle-bleed-guide"></div>
+          </div>
+          <span class="token-label">${item.token || item.orderId} (59mm artwork / 7mm bleed)</span>
+        </div>
+      `
+      )
+      .join("");
+
+    const keychainItemsHtml = keychainItems
+      .map(
+        (item) => `
+        <div class="keychain-print-item">
+          <div class="keychain-print-pair">
+            <div class="keychain-print-side">
+              <div class="keychain-print-circle">
+                <img
+                  src="${item.photoUrl || item.originalPhotoUrl || "/logo.png"}"
+                  alt="${item.orderId} front"
+                  style="filter: brightness(${getBrightness(item.orderId)}%);"
+                />
+              </div>
+              <span>FRONT</span>
+            </div>
+            <div class="keychain-print-side">
+              <div class="keychain-print-circle">
+                <img
+                  src="${item.photoBackUrl || "/logo.png"}"
+                  alt="${item.orderId} back"
+                  style="filter: brightness(${getBrightness(item.orderId)}%);"
+                />
+              </div>
+              <span>BACK</span>
+            </div>
+          </div>
+          <span class="token-label">${item.token || item.orderId} (36mm round keychain · front + back)</span>
+        </div>
+      `
+      )
+      .join("");
+
+    const squareMagnetGridHtml = squareMagnetItems.length > 0
+      ? `<div class="print-grid square-magnet-print-grid">${squareMagnetItemsHtml}</div>`
+      : "";
+
+    const circleMagnetGridHtml = circleMagnetItems.length > 0
+      ? `<div class="print-grid circle-magnet-print-grid">${circleMagnetItemsHtml}</div>`
+      : "";
+
+    const keychainGridHtml = keychainItems.length > 0
+      ? `<div class="print-grid keychain-print-grid">${keychainItemsHtml}</div>`
+      : "";
+
     const html = `
       <!DOCTYPE html>
       <html>
@@ -582,8 +640,148 @@ useEffect(() => {
             @page { size: A4 portrait; margin: 8mm 6mm; }
             * { box-sizing: border-box; }
             body { margin: 0; padding: 0; background: #fff; font-family: system-ui, -apple-system, sans-serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-            .print-grid { display: grid; grid-template-columns: repeat(3, 61mm); grid-auto-rows: 68mm; column-gap: 5mm; row-gap: 5mm; justify-content: center; align-content: start; }
-            .print-item { display: flex; flex-direction: column; align-items: center; justify-content: flex-start; page-break-inside: avoid; }
+            .print-grid {
+              display: grid;
+              justify-content: center;
+              align-content: start;
+              page-break-inside: auto;
+            }
+            .square-magnet-print-grid {
+              grid-template-columns: repeat(3, 61mm);
+              grid-auto-rows: 68mm;
+              column-gap: 5mm;
+              row-gap: 5mm;
+            }
+            .circle-magnet-print-grid {
+              grid-template-columns: repeat(3, 66mm);
+              grid-auto-rows: 72mm;
+              column-gap: 5mm;
+              row-gap: 5mm;
+              margin-top: 2mm;
+            }
+            .keychain-print-grid {
+              grid-template-columns: repeat(2, 80mm);
+              grid-auto-rows: 48mm;
+              column-gap: 10mm;
+              row-gap: 7mm;
+              margin-top: 2mm;
+            }
+            .print-item {
+              display: flex;
+              flex-direction: column;
+              align-items: center;
+              justify-content: flex-start;
+              page-break-inside: avoid;
+              break-inside: avoid;
+              min-width: 0;
+            }
+            .square-magnet-print-grid-item {
+              width: 61mm;
+              min-width: 61mm;
+            }
+            .circle-magnet-print-grid-item {
+              width: 66mm;
+              min-width: 66mm;
+              height: 72mm;
+            }
+            .circle-magnet-bleed-box {
+              width: 66mm;
+              height: 66mm;
+              position: relative;
+              flex: 0 0 66mm;
+            }
+            .circle-magnet-artwork {
+              position: absolute;
+              width: 59mm;
+              height: 59mm;
+              left: 3.5mm;
+              top: 3.5mm;
+              border-radius: 50%;
+              overflow: hidden;
+              background: #fff;
+            }
+            .circle-magnet-artwork img {
+              width: 59mm;
+              height: 59mm;
+              display: block;
+              object-fit: cover;
+              border-radius: 50%;
+            }
+            .circle-bleed-guide {
+              position: absolute;
+              inset: 0;
+              width: 66mm;
+              height: 66mm;
+              border: 0.3mm solid #111;
+              border-radius: 50%;
+              pointer-events: none;
+            }
+            .keychain-print-item {
+              width: 80mm;
+              min-width: 80mm;
+              height: 48mm;
+              display: flex;
+              flex-direction: column;
+              align-items: center;
+              justify-content: flex-start;
+              page-break-inside: avoid;
+              break-inside: avoid;
+            }
+            .keychain-print-pair {
+              width: 80mm;
+              height: 36mm;
+              display: flex;
+              flex: 0 0 36mm;
+              align-items: flex-start;
+              justify-content: center;
+              gap: 8mm;
+            }
+            .keychain-print-side {
+              width: 36mm;
+              min-width: 36mm;
+              height: 42mm;
+              display: flex;
+              flex-direction: column;
+              align-items: center;
+              justify-content: flex-start;
+              gap: 1.5mm;
+            }
+            .keychain-print-circle {
+              width: 36mm !important;
+              min-width: 36mm !important;
+              max-width: 36mm !important;
+              height: 36mm !important;
+              min-height: 36mm !important;
+              max-height: 36mm !important;
+              aspect-ratio: 1 / 1;
+              border-radius: 50% !important;
+              overflow: hidden;
+              background: #fff;
+              display: flex;
+              flex: 0 0 36mm;
+              align-items: center;
+              justify-content: center;
+              box-sizing: border-box;
+            }
+            .keychain-print-circle img {
+              width: 36mm !important;
+              min-width: 36mm !important;
+              max-width: 36mm !important;
+              height: 36mm !important;
+              min-height: 36mm !important;
+              max-height: 36mm !important;
+              aspect-ratio: 1 / 1;
+              border-radius: 50% !important;
+              object-fit: cover;
+              display: block;
+              flex: 0 0 36mm;
+            }
+            .keychain-print-side span {
+              font-size: 6pt;
+              font-weight: 900;
+              color: #222;
+              line-height: 1;
+            }
             .cut-box-61mm { width:61mm; height: 61mm; position: relative; box-sizing: border-box; background: #fff; border: 0.3mm solid #111; border-radius: 5.5mm; overflow: visible; }
             .crop-mark { position: absolute; width: 3.5mm; height: 3.5mm; }
             .crop-mark.top-left { top: -1px; left: -1px; border-top: 0.4mm solid #111; border-left: 0.4mm solid #111; }
@@ -613,7 +811,7 @@ useEffect(() => {
           </style>
         </head>
         <body>
-          <div class="print-grid">${itemsHtml}</div>
+          ${squareMagnetGridHtml}${circleMagnetGridHtml}${keychainGridHtml}
           <script>window.onload = function() { window.print(); window.close(); };</script>
         </body>
       </html>
@@ -910,8 +1108,8 @@ useEffect(() => {
             >
               ⚡ Select Next 9 Ready
             </button>
-            <button type="button" className="btn-batch-print" onClick={() => { void handlePrintBatch(); }} disabled={isPrinting}>
-              {isPrinting ? "🖨️ Printing…" : `🖨️ Print 9-Up A4 Sheet (${selectedIds.length})`}
+            <button type="button" className="btn-batch-print" onClick={handlePrintBatch}>
+              🖨️ Print 9-Up A4 Sheet ({selectedIds.length})
             </button>
             <button type="button" className="btn-clear-select" onClick={() => setSelectedIds([])}>
               Clear Selection
@@ -991,7 +1189,7 @@ useEffect(() => {
                     </td>
                     <td>
                       <div
-                        className="thumb-container"
+                        className={`thumb-container ${ord.productId === "keychain" ? "keychain-thumb" : ""}`}
                         onClick={() => setViewingOrder(ord)}
                         style={{ cursor: "pointer" }}
                         title="Click to view full design"
@@ -1034,16 +1232,6 @@ useEffect(() => {
                         <option value="Ready">Ready</option>
                         <option value="Completed">Completed</option>
                       </select>
-                      {ord.status === "Processing" && (
-                        <button
-                          type="button"
-                          className="quick-action-btn"
-                          style={{ marginTop: 6, background: "#dcfce7", color: "#166534", fontWeight: 800 }}
-                          onClick={() => { void handleStatusChange(ord.orderId, "Ready"); }}
-                        >
-                          ✓ Mark Ready
-                        </button>
-                      )}
                     </td>
                     <td>
                       <div style={{ display: "flex", gap: "6px" }}>
@@ -1069,11 +1257,10 @@ useEffect(() => {
                           title="Print Magnet"
                           onClick={() => {
                             setSelectedIds([ord.orderId]);
-                            void handlePrintBatch([ord.orderId]);
+                            setTimeout(handlePrintBatch, 50);
                           }}
-                          disabled={isPrinting}
                         >
-                          {isPrinting ? "Printing…" : "🖨️"}
+                          🖨️
                         </button>
 
                                                 <button
@@ -1118,15 +1305,15 @@ useEffect(() => {
                 <img
                   src={viewingOrder.photoUrl || viewingOrder.originalPhotoUrl || "/logo.png"}
                   alt="Product preview"
-                  className="modal-preview-img"
+                  className={`modal-preview-img ${viewingOrder.productId === "keychain" ? "keychain-preview-img" : ""}`}
                   style={{ filter: `brightness(${getBrightness(viewingOrder.orderId)}%)` }}
                 />
                 {viewingOrder.productId === "keychain" && viewingOrder.photoBackUrl && (
                   <img
                     src={viewingOrder.photoBackUrl}
                     alt="Keychain back"
-                    className="modal-preview-img"
-                    style={{ marginTop: "10px" }}
+                    className="modal-preview-img keychain-preview-img"
+                    style={{ marginTop: "10px", filter: `brightness(${getBrightness(viewingOrder.orderId)}%)` }}
                   />
                 )}
                 <div className="brightness-control">
@@ -1221,14 +1408,12 @@ useEffect(() => {
                 type="button"
                 className="action-btn single-print-btn"
                 onClick={() => {
-                  const orderId = viewingOrder.orderId;
-                  setSelectedIds([orderId]);
+                  setSelectedIds([viewingOrder.orderId]);
                   setViewingOrder(null);
-                  void handlePrintBatch([orderId]);
+                  setTimeout(handlePrintBatch, 50);
                 }}
-                disabled={isPrinting}
               >
-                {isPrinting ? "🖨️ Printing…" : "🖨️ Print This Magnet"}
+                🖨️ Print This Magnet
               </button>
 
               <a
@@ -1605,6 +1790,9 @@ useEffect(() => {
           height: 100%;
           object-fit: cover;
         }
+        .thumb-container.keychain-thumb {
+          border-radius: 50%;
+        }
         .product-name {
           display: block;
           font-weight: 700;
@@ -1750,6 +1938,68 @@ useEffect(() => {
           object-fit: contain;
           border-radius: 8px;
           box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        }
+        .modal-preview-img.keychain-preview-img {
+          border-radius: 50%;
+        }
+        .keychain-print-item {
+          width: 80mm;
+          height: 42mm;
+          display: flex;
+          align-items: flex-start;
+          justify-content: center;
+          box-sizing: border-box;
+          page-break-inside: avoid;
+          flex: 0 0 80mm;
+        }
+        .keychain-print-pair {
+          width: 80mm;
+          min-width: 80mm;
+          height: 42mm;
+          display: flex;
+          align-items: flex-start;
+          justify-content: center;
+          gap: 8mm;
+          box-sizing: border-box;
+        }
+        .keychain-print-side {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 1.5mm;
+        }
+        .keychain-print-circle {
+          width: 36mm !important;
+          min-width: 36mm !important;
+          max-width: 36mm !important;
+          height: 36mm !important;
+          min-height: 36mm !important;
+          max-height: 36mm !important;
+          border-radius: 50%;
+          overflow: hidden;
+          background: #fff;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          box-sizing: border-box;
+        }
+        .keychain-print-circle img {
+          width: 36mm !important;
+          height: 36mm !important;
+          min-width: 36mm !important;
+          min-height: 36mm !important;
+          max-width: 36mm !important;
+          max-height: 36mm !important;
+          border-radius: 50%;
+          object-fit: cover;
+          display: block;
+        }
+        .keychain-print-side span {
+          font-size: 6pt;
+          font-weight: 900;
+          color: #222;
+          letter-spacing: 0.04em;
         }
         .brightness-control {
           width: 100%;

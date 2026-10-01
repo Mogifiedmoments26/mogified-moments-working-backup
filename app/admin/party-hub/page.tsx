@@ -3,6 +3,8 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Brand } from "../../../components/Brand";
 import { listOrders } from "../../../lib/orders";
+import { db, firebaseConfigured } from "../../../lib/firebase";
+import { collection, doc, getDocs, query, updateDoc, where } from "firebase/firestore";
 import { savePhoto } from "../../../lib/storage";
 
 const loadRazorpayScript = () => {
@@ -83,6 +85,16 @@ export default function PartyHubPage() {
   ] = useState<string | null>(null);
 
   const [
+    backgroundUploading,
+    setBackgroundUploading,
+  ] = useState<string | null>(null);
+
+  const [
+    keychainBackUploading,
+    setKeychainBackUploading,
+  ] = useState<string | null>(null);
+
+  const [
     paymentOrder,
     setPaymentOrder,
   ] = useState<any | null>(null);
@@ -109,6 +121,26 @@ export default function PartyHubPage() {
   ] = useState<string | null>(null);
 
   const frameInputRefs =
+    useRef<{
+      [orderId: string]: HTMLInputElement | null;
+    }>({});
+
+  const backgroundInputRefs =
+    useRef<{
+      [orderId: string]: HTMLInputElement | null;
+    }>({});
+
+  const keychainBackInputRefs =
+    useRef<{
+      [orderId: string]: HTMLInputElement | null;
+    }>({});
+
+  const [
+    editedPhotoUploading,
+    setEditedPhotoUploading,
+  ] = useState<string | null>(null);
+
+  const editedPhotoInputRefs =
     useRef<{
       [orderId: string]: HTMLInputElement | null;
     }>({});
@@ -502,8 +534,416 @@ export default function PartyHubPage() {
         ? order.guestPhotoData
         : [];
 
+    const isSamePhotoPartyOrder =
+      String(order.partyFulfillmentMode || "") ===
+      "same-photo";
+
+    const samePhotoSource =
+      String(order.photoUrl || "").trim();
+
+    const packageQuantity = Math.max(
+      1,
+      Number(order.quantity) || 1
+    );
+
+    const rawProductId = String(
+      order.productId ||
+        order.productType ||
+        ""
+    ).toLowerCase();
+
+    const orderProductName = String(
+      order.productName || ""
+    ).toLowerCase();
+
+    const isKeychainOrder =
+      rawProductId.includes("keychain") ||
+      orderProductName.includes("keychain");
+
+    const isCircleOrder =
+      rawProductId.includes("circle") ||
+      orderProductName.includes("circle");
+
+    /*
+     * KEYCHAIN PRINTING
+     *
+     * Each guest supplies an individual FRONT photo.
+     * When the party has a shared back, the same host/studio
+     * supplied back is printed for every guest.
+     *
+     * Layout:
+     * - 2 complete keychains per row
+     * - each keychain = FRONT + BACK
+     * - therefore 4 circular photos per row
+     * - each circular photo = 36mm diameter
+     *
+     * Do not send keychains through the square magnet 61mm cell.
+     */
+    if (isKeychainOrder) {
+      const targetPhotos =
+        selectedIndices.length > 0
+          ? selectedIndices
+              .map((i) => ({
+                src: photos[i],
+                index: i,
+              }))
+              .filter(
+                (item) => Boolean(item.src)
+              )
+          : photos.map(
+              (src: string, index: number) => ({
+                src,
+                index,
+              })
+            );
+
+      if (targetPhotos.length === 0) {
+        alert(
+          "No guest front photos are available to print."
+        );
+        setPrintBusyOrderId(null);
+        return;
+      }
+
+      const keychainBackMode = String(
+        order.keychainBackMode ||
+          order.partyKeychainBackMode ||
+          order.sharedKeychainBackMode ||
+          ""
+      ).toLowerCase();
+
+      const sharedKeychainBackUrl = String(
+        order.sharedKeychainBackUrl ||
+          order.sharedKeychainBackPhotoUrl ||
+          order.keychainBackUrl ||
+          order.keychainBackPhotoUrl ||
+          order.partyKeychainBackUrl ||
+          order.customKeychainBackUrl ||
+          ""
+      ).trim();
+
+      const sharedBackRequested =
+        keychainBackMode === "shared" ||
+        order.keychainBackRequested === true ||
+        String(
+          order.keychainBackRequested || ""
+        ).toLowerCase() === "true" ||
+        Boolean(
+          order.keychainBackRequest ||
+            order.keychainBackNotes ||
+            order.sharedKeychainBackRequest ||
+            order.sharedKeychainBackNotes
+        ) ||
+        Boolean(sharedKeychainBackUrl);
+
+      if (
+        sharedBackRequested &&
+        !sharedKeychainBackUrl
+      ) {
+        alert(
+          "This keychain party requires one shared back photo/design, but the back photo has not been uploaded yet. Please upload it in the Shared Keychain Back section before printing."
+        );
+        setPrintBusyOrderId(null);
+        return;
+      }
+
+      if (!sharedKeychainBackUrl) {
+        alert(
+          "No shared keychain back photo is available for this party. Please upload the back photo before printing."
+        );
+        setPrintBusyOrderId(null);
+        return;
+      }
+
+      const printWin =
+        window.open(
+          "",
+          "_blank",
+          "width=900,height=950"
+        );
+
+      if (!printWin) {
+        setPrintBusyOrderId(null);
+        alert(
+          "Please allow popups to open the keychain print sheet."
+        );
+        return;
+      }
+
+      window.setTimeout(() => {
+        setPrintBusyOrderId((current) =>
+          current === order.orderId
+            ? null
+            : current
+        );
+      }, 3000);
+
+      try {
+        const statusRes = await fetch(
+          "/api/orders",
+          {
+            method: "PATCH",
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
+            body: JSON.stringify({
+              orderId:
+                order.orderId,
+              status: "Processing",
+            }),
+          }
+        );
+
+        if (!statusRes.ok) {
+          console.error(
+            "Could not automatically update keychain party order status to Processing."
+          );
+        } else {
+          setOrders((current) =>
+            current.map((item) =>
+              item.orderId ===
+              order.orderId
+                ? {
+                    ...item,
+                    status:
+                      "Processing",
+                  }
+                : item
+            )
+          );
+        }
+      } catch (statusError) {
+        console.error(
+          "Automatic Processing status update failed:",
+          statusError
+        );
+      }
+
+      const tokenLabel =
+        order.token ||
+        `#${String(
+          order.orderId || ""
+        ).slice(-4)}`;
+
+      const keychainItemsHtml =
+        targetPhotos
+          .map(
+            (item: {
+              src: string;
+              index: number;
+            }) => {
+              const brightness =
+                getPhotoBrightness(
+                  order.orderId,
+                  item.index
+                );
+
+              return `
+                <div class="keychain-item">
+                  <div class="keychain-pair">
+
+                    <div class="keychain-side">
+                      <div class="keychain-circle">
+                        <img
+                          src="${item.src}"
+                          alt="Front"
+                          style="filter: brightness(${brightness}%);"
+                        />
+                      </div>
+                      <span class="side-label">FRONT</span>
+                    </div>
+
+                    <div class="keychain-side">
+                      <div class="keychain-circle">
+                        <img
+                          src="${sharedKeychainBackUrl}"
+                          alt="Back"
+                        />
+                      </div>
+                      <span class="side-label">BACK</span>
+                    </div>
+
+                  </div>
+
+                  <span class="keychain-token">
+                    ${tokenLabel}
+                  </span>
+                </div>
+              `;
+            }
+          )
+          .join("");
+
+      printWin.document.write(`
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <title>
+              Keychain Batch Print - ${
+                order.eventName ||
+                order.customerName ||
+                "Party"
+              }
+            </title>
+
+            <style>
+              @page {
+                size: A4 portrait;
+                margin: 0;
+              }
+
+              * {
+                box-sizing: border-box;
+              }
+
+              body {
+                margin: 0;
+                padding: 10mm 12mm;
+                background: #fff;
+                font-family: system-ui, -apple-system, sans-serif;
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+              }
+
+              .keychain-grid {
+                display: grid;
+                grid-template-columns: repeat(2, 80mm);
+                grid-auto-rows: 45mm;
+                column-gap: 8mm;
+                row-gap: 7mm;
+                justify-content: center;
+                align-content: start;
+              }
+
+              /*
+               * One complete keychain occupies one 80mm-wide
+               * item. It contains two 36mm circles:
+               * FRONT + BACK.
+               */
+              .keychain-item {
+                width: 80mm;
+                min-width: 80mm;
+                height: 45mm;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: flex-start;
+                page-break-inside: avoid;
+                break-inside: avoid;
+              }
+
+              .keychain-pair {
+                width: 80mm;
+                height: 38mm;
+                display: flex;
+                align-items: flex-start;
+                justify-content: center;
+                gap: 8mm;
+              }
+
+              .keychain-side {
+                width: 36mm;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: flex-start;
+              }
+
+              .keychain-circle {
+                width: 36mm !important;
+                height: 36mm !important;
+                min-width: 36mm !important;
+                min-height: 36mm !important;
+                max-width: 36mm !important;
+                max-height: 36mm !important;
+                border-radius: 50% !important;
+                overflow: hidden;
+                position: relative;
+                background: #fff;
+                box-sizing: border-box;
+                flex: 0 0 36mm;
+              }
+
+              .keychain-circle img {
+                display: block;
+                width: 36mm !important;
+                height: 36mm !important;
+                min-width: 36mm !important;
+                min-height: 36mm !important;
+                max-width: 36mm !important;
+                max-height: 36mm !important;
+                border-radius: 50% !important;
+                object-fit: cover !important;
+                object-position: center;
+              }
+
+              .side-label {
+                margin-top: 1mm;
+                font-size: 6pt;
+                line-height: 1;
+                font-weight: 800;
+                color: #555;
+                text-align: center;
+              }
+
+              /*
+               * The labels are intentionally small and can be
+               * trimmed away during production if necessary.
+               */
+              .keychain-token {
+                margin-top: 1mm;
+                font-size: 5.5pt;
+                line-height: 1;
+                color: #888;
+                text-align: center;
+              }
+            </style>
+          </head>
+
+          <body>
+            <div class="keychain-grid">
+              ${keychainItemsHtml}
+            </div>
+
+            <script>
+              window.onload = () => {
+                setTimeout(() => {
+                  window.print();
+                  window.close();
+                }, 500);
+              };
+            </script>
+          </body>
+        </html>
+      `);
+
+      printWin.document.close();
+      return;
+    }
+
+    /*
+     * MAGNET PRINTING
+     *
+     * Keep the existing square/circle party-package printing
+     * behaviour unchanged.
+     */
     const targetPhotos =
-      selectedIndices.length > 0
+      isSamePhotoPartyOrder
+        ? samePhotoSource
+          ? Array.from(
+              {
+                length:
+                  packageQuantity,
+              },
+              () => ({
+                src:
+                  samePhotoSource,
+                index: 0,
+              })
+            )
+          : []
+        : selectedIndices.length > 0
         ? selectedIndices
             .map((i) => ({
               src: photos[i],
@@ -513,7 +953,10 @@ export default function PartyHubPage() {
               (item) => Boolean(item.src)
             )
         : photos.map(
-            (src: string, index: number) => ({
+            (
+              src: string,
+              index: number
+            ) => ({
               src,
               index,
             })
@@ -523,7 +966,9 @@ export default function PartyHubPage() {
       targetPhotos.length === 0
     ) {
       alert(
-        "No photos selected or available to print."
+        isSamePhotoPartyOrder
+          ? "No prepared package photo is available to print."
+          : "No photos selected or available to print."
       );
       setPrintBusyOrderId(null);
       return;
@@ -542,17 +987,14 @@ export default function PartyHubPage() {
       return;
     }
 
-    // Prevent accidental double-print clicks while the print job is being opened.
     window.setTimeout(() => {
       setPrintBusyOrderId((current) =>
-        current === order.orderId ? null : current
+        current === order.orderId
+          ? null
+          : current
       );
     }, 3000);
 
-    // The print window successfully opened, so mark the
-    // party order as Processing. This does not mark it
-    // Completed; that remains a manual step after the
-    // physical magnets are produced.
     try {
       const statusRes = await fetch(
         "/api/orders",
@@ -565,7 +1007,8 @@ export default function PartyHubPage() {
           body: JSON.stringify({
             orderId:
               order.orderId,
-            status: "Processing",
+            status:
+              "Processing",
           }),
         }
       );
@@ -581,7 +1024,8 @@ export default function PartyHubPage() {
             order.orderId
               ? {
                   ...item,
-                  status: "Processing",
+                  status:
+                    "Processing",
                 }
               : item
           )
@@ -627,42 +1071,81 @@ export default function PartyHubPage() {
 
             .grid {
               display: grid;
-              grid-template-columns:
-                repeat(3, 61mm);
-              grid-auto-rows: 61mm;
+              grid-template-columns: ${
+                isCircleOrder
+                  ? "repeat(2, 66mm)"
+                  : "repeat(3, 61mm)"
+              };
+              grid-auto-rows: ${
+                isCircleOrder
+                  ? "66mm"
+                  : "61mm"
+              };
               gap: 3mm;
               justify-content: center;
             }
 
             .cell {
-              width: 61mm;
-              height: 61mm;
+              width: ${
+                isCircleOrder
+                  ? "66mm"
+                  : "61mm"
+              };
+              height: ${
+                isCircleOrder
+                  ? "66mm"
+                  : "61mm"
+              };
               position: relative;
               background: #fff;
-              overflow: hidden;
+              overflow: ${
+                isCircleOrder
+                  ? "visible"
+                  : "hidden"
+              };
               page-break-inside: avoid;
               box-sizing: border-box;
-              /* 61mm artwork + bleed alignment boundary. */
-              border: 0.3mm solid #000;
-              border-radius: 3.5mm;
+              ${
+                isCircleOrder
+                  ? "border: 0.3mm solid #000; border-radius: 50%;"
+                  : "border: 0.3mm solid #000; border-radius: 5.5mm;"
+              }
             }
 
             .cell img {
               position: absolute;
-              left: 4.5mm;
-              top: 4.5mm;
-              width: 52mm;
-              height: 52mm;
-              object-fit: contain;
+              left: 0;
+              top: 0;
+              width: ${
+                isCircleOrder
+                  ? "66mm"
+                  : "61mm"
+              };
+              height: ${
+                isCircleOrder
+                  ? "66mm"
+                  : "61mm"
+              };
+              object-fit: ${
+                isCircleOrder
+                  ? "cover"
+                  : "contain"
+              };
               display: block;
+              ${
+                isCircleOrder
+                  ? "border-radius: 50%;"
+                  : ""
+              }
             }
 
             .guide {
               position: absolute;
-              left: 4.5mm;
-              top: 4.5mm;
-              width: 52mm;
-              height: 52mm;
+              ${
+                isCircleOrder
+                  ? "left: 3.5mm; top: 3.5mm; width: 59mm; height: 59mm; border-radius: 50%;"
+                  : "left: 4.5mm; top: 4.5mm; width: 52mm; height: 52mm;"
+              }
               border:
                 0.3mm dashed
                 rgba(0,0,0,0.4);
@@ -673,8 +1156,11 @@ export default function PartyHubPage() {
 
             .token {
               position: absolute;
-              bottom: 6mm;
-              right: 6mm;
+              ${
+                isCircleOrder
+                  ? "bottom: 2mm; right: 0; left: 0; text-align: center;"
+                  : "bottom: 6mm; right: 6mm;"
+              }
               color: #333;
               font-size: 7pt;
               font-weight: 900;
@@ -687,7 +1173,12 @@ export default function PartyHubPage() {
           <div class="grid">
             ${targetPhotos
               .map(
-                (item: { src: string; index: number }) => `
+                (
+                  item: {
+                    src: string;
+                    index: number;
+                  }
+                ) => `
                   <div class="cell">
                     <img
                       src="${item.src}"
@@ -866,6 +1357,331 @@ export default function PartyHubPage() {
     frameInputRefs.current[
       orderId
     ]?.click();
+  }
+
+  // ---------------------------------------------------------
+  // PARTY-WIDE CUSTOM BACKGROUND
+  // ---------------------------------------------------------
+
+  async function handleBackgroundUpload(
+    order: any,
+    file: File
+  ) {
+    if (!file.type.startsWith("image/")) {
+      alert("Please select an image file for the party background.");
+      return;
+    }
+
+    setBackgroundUploading(order.orderId);
+
+    try {
+      const reader = new FileReader();
+
+      const dataUrl = await new Promise<string>(
+        (resolve, reject) => {
+          reader.onload = () => resolve(String(reader.result));
+          reader.onerror = () =>
+            reject(new Error("Could not read the background file."));
+          reader.readAsDataURL(file);
+        }
+      );
+
+      const storageUrl = await savePhoto(
+        dataUrl,
+        order.orderId,
+        "party-custom-background.png"
+      );
+
+      if (!firebaseConfigured || !db) {
+        throw new Error(
+          "Firebase is not connected, so the party background could not be saved."
+        );
+      }
+
+      const ordersCol = collection(db, "orders");
+      const snapshot = await getDocs(
+        query(ordersCol, where("orderId", "==", order.orderId))
+      );
+
+      if (snapshot.empty) {
+        throw new Error("Could not find the party order in Firestore.");
+      }
+
+      const orderRef = doc(db, "orders", snapshot.docs[0].id);
+
+      await updateDoc(orderRef, {
+        customBackgroundRequested: true,
+        customBackgroundNotes:
+          order.customBackgroundNotes ||
+          "Custom background uploaded by studio.",
+        customBackgroundUrl: storageUrl,
+      });
+
+      setOrders((prev) =>
+        prev.map((o) =>
+          o.orderId === order.orderId
+            ? {
+                ...o,
+                customBackgroundRequested: true,
+                customBackgroundUrl: storageUrl,
+                customBackgroundNotes:
+                  o.customBackgroundNotes ||
+                  "Custom background uploaded by studio.",
+              }
+            : o
+        )
+      );
+
+      alert(
+        "Party background saved. This custom background is now attached to the whole party order."
+      );
+    } catch (err: any) {
+      console.error("Party background upload error:", err);
+      alert(err?.message || "Could not upload the party background.");
+    } finally {
+      setBackgroundUploading(null);
+    }
+  }
+
+  function triggerBackgroundPicker(orderId: string) {
+    backgroundInputRefs.current[orderId]?.click();
+  }
+
+  // ---------------------------------------------------------
+  // PARTY-WIDE SHARED KEYCHAIN BACK
+  // ---------------------------------------------------------
+
+  async function handleKeychainBackUpload(order: any, file: File) {
+    const orderId = String(order.orderId || "").trim();
+
+    if (!orderId) {
+      alert("This party order does not have a valid order ID.");
+      return;
+    }
+
+    if (!file.type.startsWith("image/")) {
+      alert("Please choose an image file for the shared keychain back.");
+      return;
+    }
+
+    setKeychainBackUploading(orderId);
+
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = () =>
+          reject(new Error("Could not read the selected image."));
+
+        reader.readAsDataURL(file);
+      });
+
+      const storageUrl = await savePhoto(
+        dataUrl,
+        orderId,
+        "party-shared-keychain-back.png"
+      );
+
+      if (!firebaseConfigured || !db) {
+        throw new Error(
+          "Firebase is not connected, so the shared keychain back could not be saved."
+        );
+      }
+
+      const ordersCol = collection(db, "orders");
+      const snapshot = await getDocs(
+        query(ordersCol, where("orderId", "==", orderId))
+      );
+
+      if (snapshot.empty) {
+        throw new Error("Could not find the party order in Firestore.");
+      }
+
+      const orderRef = doc(db, "orders", snapshot.docs[0].id);
+
+      const uploadedAt = new Date().toISOString();
+
+      await updateDoc(orderRef, {
+        keychainBackMode: "shared",
+        sharedKeychainBackUrl: storageUrl,
+        sharedKeychainBackUploadedAt: uploadedAt,
+      });
+
+      setOrders((prev) =>
+        prev.map((o) =>
+          o.orderId === orderId
+            ? {
+                ...o,
+                keychainBackMode: "shared",
+                sharedKeychainBackUrl: storageUrl,
+                sharedKeychainBackUploadedAt: uploadedAt,
+              }
+            : o
+        )
+      );
+
+      alert(
+        "Shared keychain back saved. This back design is now attached to all guest keychains in this party."
+      );
+    } catch (err: any) {
+      console.error("Shared keychain back upload error:", err);
+      alert(
+        err?.message || "Could not upload the shared keychain back."
+      );
+    } finally {
+      setKeychainBackUploading(null);
+    }
+  }
+
+  function triggerKeychainBackPicker(orderId: string) {
+    keychainBackInputRefs.current[orderId]?.click();
+  }
+
+  // ---------------------------------------------------------
+  // CUSTOMER PHOTO DOWNLOAD / EDITED PHOTO REPLACEMENT
+  // ---------------------------------------------------------
+
+  async function handleDownloadCustomerPhoto(order: any) {
+    const orderId = String(order.orderId || "").trim();
+    const photoUrl = String(
+      order.originalPhotoUrl || order.photoUrl || ""
+    ).trim();
+
+    if (!orderId) {
+      alert("This party order does not have a valid order ID.");
+      return;
+    }
+
+    if (!photoUrl) {
+      alert("No customer-uploaded photo is available for this order.");
+      return;
+    }
+
+    if (photoDownloadBusy) {
+      return;
+    }
+
+    setPhotoDownloadBusy(orderId);
+
+    try {
+      const response = await fetch(photoUrl);
+      if (!response.ok) {
+        throw new Error(
+          `The customer photo could not be downloaded (HTTP ${response.status}).`
+        );
+      }
+
+      const blob = await response.blob();
+      const downloadUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+
+      anchor.href = downloadUrl;
+      anchor.download = `Mogified-Moments_${orderId}_Customer-Photo.${getPhotoExtension(
+        photoUrl,
+        blob.type
+      )}`;
+      anchor.style.display = "none";
+
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+
+      window.setTimeout(() => {
+        URL.revokeObjectURL(downloadUrl);
+      }, 1000);
+    } catch (err: any) {
+      console.error("Customer photo download error:", err);
+      alert(
+        err?.message ||
+          "Could not download the customer photo. Please check the Storage URL or network connection."
+      );
+    } finally {
+      setPhotoDownloadBusy(null);
+    }
+  }
+
+  async function handleEditedPhotoUpload(
+    order: any,
+    file: File
+  ) {
+    if (!file.type.startsWith("image/")) {
+      alert("Please select an image file for the edited customer design.");
+      return;
+    }
+
+    setEditedPhotoUploading(order.orderId);
+
+    try {
+      const reader = new FileReader();
+
+      const dataUrl = await new Promise<string>(
+        (resolve, reject) => {
+          reader.onload = () => resolve(String(reader.result));
+          reader.onerror = () =>
+            reject(new Error("Could not read the edited photo file."));
+          reader.readAsDataURL(file);
+        }
+      );
+
+      const storageUrl = await savePhoto(
+        dataUrl,
+        order.orderId,
+        "studio-edited-magnet.png"
+      );
+
+      if (!firebaseConfigured || !db) {
+        throw new Error(
+          "Firebase is not connected, so the edited customer design could not be saved."
+        );
+      }
+
+      const ordersCol = collection(db, "orders");
+      const snapshot = await getDocs(
+        query(ordersCol, where("orderId", "==", order.orderId))
+      );
+
+      if (snapshot.empty) {
+        throw new Error("Could not find the party order in Firestore.");
+      }
+
+      const orderRef = doc(ordersCol, snapshot.docs[0].id);
+
+      await updateDoc(orderRef, {
+        photoUrl: storageUrl,
+        studioEditedPhotoUrl: storageUrl,
+        studioEditedAt: new Date().toISOString(),
+      });
+
+      setOrders((prev) =>
+        prev.map((o) =>
+          o.orderId === order.orderId
+            ? {
+                ...o,
+                photoUrl: storageUrl,
+                studioEditedPhotoUrl: storageUrl,
+                studioEditedAt: new Date().toISOString(),
+              }
+            : o
+        )
+      );
+
+      alert(
+        "Edited customer design uploaded and attached to this order. The original customer photo has been preserved."
+      );
+    } catch (err: any) {
+      console.error("Edited customer photo upload error:", err);
+      alert(
+        err?.message ||
+          "Could not upload the edited customer design."
+      );
+    } finally {
+      setEditedPhotoUploading(null);
+    }
+  }
+
+  function triggerEditedPhotoPicker(orderId: string) {
+    editedPhotoInputRefs.current[orderId]?.click();
   }
 
   // ---------------------------------------------------------
@@ -1806,6 +2622,26 @@ export default function PartyHubPage() {
                       : "")
                 ).trim();
 
+              const customBackgroundRequested =
+                order.customBackgroundRequested === true ||
+                String(order.customBackgroundRequested || "").toLowerCase() === "true" ||
+                Boolean(
+                  order.customBackgroundNotes ||
+                    order.customBackgroundDescription ||
+                    order.customBackgroundRequestDescription
+                );
+
+              const customBackgroundDescription =
+                String(
+                  order.customBackgroundNotes ||
+                    order.customBackgroundDescription ||
+                    order.customBackgroundRequestDescription ||
+                    ""
+                ).trim();
+
+              const customBackgroundUrl =
+                String(order.customBackgroundUrl || "").trim();
+
               const productId = String(
                 order.productId ||
                   order.productType ||
@@ -1814,9 +2650,32 @@ export default function PartyHubPage() {
               ).toLowerCase();
 
               const productName =
-                productId.includes("circle")
+                productId.includes("keychain")
+                  ? "36mm Photo Keychain"
+                  : productId.includes("circle")
                   ? "Circle Magnet"
                   : "Square Magnet";
+
+              const isKeychainProduct = productId.includes("keychain");
+
+              const sharedKeychainBackUrl = String(
+                order.sharedKeychainBackUrl || ""
+              ).trim();
+
+              const keychainBackMode = String(
+                order.keychainBackMode || ""
+              )
+                .trim()
+                .toLowerCase();
+
+              const sharedKeychainBackRequested =
+                keychainBackMode === "shared" ||
+                Boolean(
+                  order.sharedKeychainBackRequest ||
+                    order.keychainBackRequest ||
+                    order.customKeychainBackRequested
+                ) ||
+                sharedKeychainBackUrl !== "";
 
               const productDetails =
                 String(order.productName || "").trim();
@@ -1948,6 +2807,35 @@ export default function PartyHubPage() {
                             {String(frameValue)}
                           </div>
                         )}
+
+                        <div>
+                          <strong>Custom Background Requested:</strong>{" "}
+                          {customBackgroundRequested ? "Yes" : "No"}
+                        </div>
+
+                        {customBackgroundRequested && (
+                          <div
+                            style={{
+                              color: "#166534",
+                              marginTop: "2px",
+                            }}
+                          >
+                            <strong>Custom Background Description:</strong>{" "}
+                            {customBackgroundDescription || "No description provided"}
+                          </div>
+                        )}
+
+                        {customBackgroundUrl && (
+                          <div
+                            style={{
+                              wordBreak: "break-all",
+                              color: "#166534",
+                            }}
+                          >
+                            <strong>Applied Custom Background:</strong>{" "}
+                            {String(customBackgroundUrl)}
+                          </div>
+                        )}
                       </div>
                     </div>
 
@@ -1987,12 +2875,16 @@ export default function PartyHubPage() {
                           )
                         }
                         disabled={
-                          photos.length === 0 ||
+                          (String(order.partyFulfillmentMode || "") === "same-photo"
+                            ? !String(order.photoUrl || "").trim()
+                            : photos.length === 0) ||
                           printBusyOrderId === order.orderId
                         }
                       >
                         {printBusyOrderId === order.orderId
                           ? "⏳ Printing..."
+                          : String(order.partyFulfillmentMode || "") === "same-photo"
+                          ? `🖨️ Print All (${Math.max(1, Number(order.quantity) || 1)})`
                           : `🖨️ Print Selected (${
                               selectedIndices.length > 0
                                 ? selectedIndices.length
@@ -2226,248 +3118,524 @@ export default function PartyHubPage() {
                   </div>
 
                   {/* --------------------------------------- */}
+                  {/* PARTY BACKGROUND */}
+                  {/* --------------------------------------- */}
+
+                  <div className="background-section">
+                    <div className="background-section-header">
+                      <div>
+                        <h3>🌄 Party-Wide Background</h3>
+                        <p>
+                          Upload or replace the custom background when the customer has requested one.
+                          The background is attached to the whole party order.
+                        </p>
+                      </div>
+
+                      <div>
+                        <input
+                          ref={(el) => {
+                            backgroundInputRefs.current[order.orderId] = el;
+                          }}
+                          type="file"
+                          accept="image/*"
+                          hidden
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) {
+                              handleBackgroundUpload(order, file);
+                            }
+                            e.target.value = "";
+                          }}
+                        />
+
+                        <button
+                          type="button"
+                          className="button primary"
+                          onClick={() => triggerBackgroundPicker(order.orderId)}
+                          disabled={backgroundUploading === order.orderId}
+                        >
+                          {backgroundUploading === order.orderId
+                            ? "Uploading..."
+                            : customBackgroundUrl
+                            ? "🔄 Replace Background"
+                            : "🌄 Upload Custom Background"}
+                        </button>
+                      </div>
+                    </div>
+
+                    {customBackgroundUrl ? (
+                      <div className="background-preview-row">
+                        <div className="background-preview">
+                          <img
+                            src={customBackgroundUrl}
+                            alt="Party custom background"
+                          />
+                        </div>
+
+                        <div className="background-status">
+                          <strong>✓ Custom background active</strong>
+                          <span>
+                            This background is attached to the whole party order.
+                          </span>
+                          {customBackgroundDescription && (
+                            <span>
+                              <strong>Request:</strong>{" "}
+                              {customBackgroundDescription}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="background-empty">
+                        {customBackgroundRequested ? (
+                          <>
+                            <strong>Custom background requested.</strong>{" "}
+                            Upload the finished background above.
+                            {customBackgroundDescription
+                              ? ` Request: ${customBackgroundDescription}`
+                              : ""}
+                          </>
+                        ) : (
+                          "No custom party background uploaded yet."
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {isKeychainProduct && sharedKeychainBackRequested && (
+                    <div
+                      className="background-section"
+                      style={{
+                        marginTop: "14px",
+                        border: "1px solid #eadcf8",
+                        background: "#fcfaff",
+                      }}
+                    >
+                      <div className="background-section-header">
+                        <div>
+                          <h3>🔑 Shared Keychain Back</h3>
+                          <p>
+                            The customer requested one custom back photo/design
+                            for all guest keychains in this party.
+                          </p>
+
+                          {(order.sharedKeychainBackRequest ||
+                            order.keychainBackRequest) && (
+                            <p
+                              style={{
+                                marginTop: "5px",
+                                color: "#6b21a8",
+                                fontWeight: 700,
+                              }}
+                            >
+                              Request:{" "}
+                              {String(
+                                order.sharedKeychainBackRequest ||
+                                  order.keychainBackRequest
+                              )}
+                            </p>
+                          )}
+                        </div>
+
+                        <div>
+                          <input
+                            ref={(el) => {
+                              keychainBackInputRefs.current[order.orderId] = el;
+                            }}
+                            type="file"
+                            accept="image/*"
+                            hidden
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+
+                              if (file) {
+                                handleKeychainBackUpload(order, file);
+                              }
+
+                              e.target.value = "";
+                            }}
+                          />
+
+                          <button
+                            type="button"
+                            className="button primary"
+                            onClick={() =>
+                              triggerKeychainBackPicker(order.orderId)
+                            }
+                            disabled={
+                              keychainBackUploading === order.orderId
+                            }
+                          >
+                            {keychainBackUploading === order.orderId
+                              ? "Uploading..."
+                              : sharedKeychainBackUrl
+                              ? "🔄 Replace Back Photo"
+                              : "📷 Upload Custom Back Photo"}
+                          </button>
+                        </div>
+                      </div>
+
+                      {sharedKeychainBackUrl ? (
+                        <div className="background-preview-row">
+                          <div className="background-preview">
+                            <img
+                              src={sharedKeychainBackUrl}
+                              alt="Shared keychain back"
+                              style={{
+                                width: "120px",
+                                height: "120px",
+                                borderRadius: "50%",
+                                objectFit: "cover",
+                                border: "2px solid #d8c8ee",
+                              }}
+                            />
+                          </div>
+
+                          <div className="background-status">
+                            <strong>✓ Shared back photo active</strong>
+                            <span>
+                              This back design will be used for every guest
+                              keychain in this party.
+                            </span>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="background-empty">
+                          <strong>Custom back requested.</strong>{" "}
+                          Upload the finished back photo/design above.
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* --------------------------------------- */}
                   {/* GUEST PHOTOS */}
                   {/* --------------------------------------- */}
 
                   <div className="party-photos-stream">
-                    <h3>
-                      Guest Uploads Stream ({photosReceived} received / {magnetsIncluded} included)
-                    </h3>
+                    {String(order.partyFulfillmentMode || "") === "same-photo" ? (
+                      <>
+                        <h3>
+                          Bulk Photo Package · {Math.max(1, Number(order.quantity) || 1)} magnets
+                        </h3>
 
-                    <p
-                      style={{
-                        margin:
-                          "0 0 10px",
-                        fontSize:
-                          "11px",
-                        color:
-                          "#64748b",
-                      }}
-                    >
-                      Adjust brightness for
-                      individual photos before
-                      batch printing. These
-                      adjustments are for this
-                      Party Hub session only.
-                    </p>
+                        <p
+                          style={{
+                            margin: "0 0 10px",
+                            fontSize: "11px",
+                            color: "#64748b",
+                          }}
+                        >
+                          One customer-uploaded design will be printed on every magnet in this package.
+                          Adjust brightness once here; the same setting is used for all copies.
+                        </p>
 
-                    {photos.length ===
-                    0 ? (
-                      <p className="no-photos">
-                        Awaiting guest
-                        uploads via QR
-                        code...
-                      </p>
-                    ) : (
-                      <div className="photo-lines-list">
-                        {photos.map(
-                          (
-                            imgSrc: string,
-                            i: number
-                          ) => {
-                            const isDone =
-                              completedIndices.includes(
-                                i
-                              );
+                        <div
+                          style={{
+                            margin: "0 0 12px",
+                            padding: "10px 12px",
+                            borderRadius: "12px",
+                            background: "#f8fafc",
+                            border: "1px solid #e2e8f0",
+                          }}
+                        >
+                          <strong
+                            style={{
+                              display: "block",
+                              fontSize: "11px",
+                              color: "#292342",
+                              marginBottom: "4px",
+                            }}
+                          >
+                            ✏️ Customisation workflow
+                          </strong>
+                          <span
+                            style={{
+                              display: "block",
+                              fontSize: "10px",
+                              color: "#64748b",
+                              lineHeight: 1.5,
+                            }}
+                          >
+                            Download the original customer photo, edit it according to their custom frame/background request, then upload the finished design back to this order. The original customer photo stays preserved.
+                          </span>
 
-                            const isSelected =
-                              selectedIndices.includes(
-                                i
-                              );
+                          <div
+                            style={{
+                              display: "flex",
+                              gap: "8px",
+                              flexWrap: "wrap",
+                              marginTop: "9px",
+                            }}
+                          >
+                            <button
+                              type="button"
+                              className="button secondary"
+                              onClick={() => handleDownloadCustomerPhoto(order)}
+                              disabled={photoDownloadBusy === order.orderId}
+                            >
+                              {photoDownloadBusy === order.orderId
+                                ? "Downloading..."
+                                : "⬇️ Download Customer Photo"}
+                            </button>
 
-                            return (
+                            <input
+                              ref={(el) => {
+                                editedPhotoInputRefs.current[order.orderId] = el;
+                              }}
+                              type="file"
+                              accept="image/*"
+                              hidden
+                              onChange={(e) => {
+                                const file = e.target.files?.[0];
+                                if (file) {
+                                  handleEditedPhotoUpload(order, file);
+                                }
+                                e.target.value = "";
+                              }}
+                            />
+
+                            <button
+                              type="button"
+                              className="button primary"
+                              onClick={() => triggerEditedPhotoPicker(order.orderId)}
+                              disabled={editedPhotoUploading === order.orderId}
+                            >
+                              {editedPhotoUploading === order.orderId
+                                ? "Uploading..."
+                                : "⬆️ Upload Edited Design"}
+                            </button>
+                          </div>
+
+                          {String(order.studioEditedPhotoUrl || "").trim() && (
+                            <span
+                              style={{
+                                display: "block",
+                                marginTop: "7px",
+                                fontSize: "10px",
+                                color: "#168a4b",
+                                fontWeight: 800,
+                              }}
+                            >
+                              ✓ Studio-edited design is currently attached to this order.
+                            </span>
+                          )}
+                        </div>
+
+                        {String(order.photoUrl || "").trim() ? (
+                          <div className="photo-lines-list">
+                            <div className="photo-line-item new-item">
                               <div
-                                key={i}
-                                className={`photo-line-item ${
-                                  isDone
-                                    ? "done-item"
-                                    : "new-item"
-                                }`}
+                                className="thumb-box"
+                                style={{ position: "relative" }}
                               >
-                                <input
-                                  type="checkbox"
-                                  checked={
-                                    isSelected
-                                  }
-                                  onChange={() =>
-                                    toggleSelectPhoto(
-                                      order.orderId,
-                                      i
-                                    )
-                                  }
-                                  aria-label={`Select photo ${
-                                    i + 1
-                                  }`}
+                                <img
+                                  src={String(order.photoUrl).trim()}
+                                  alt="Bulk package magnet design"
+                                  style={{
+                                    filter: `brightness(${getPhotoBrightness(order.orderId, 0)}%)`,
+                                  }}
                                 />
+                              </div>
+
+                              <div className="photo-info">
+                                <strong>
+                                  Same design × {Math.max(1, Number(order.quantity) || 1)}
+                                </strong>
+
+                                <span className="status-pill new">
+                                  🖼️ One Photo • Print All
+                                </span>
 
                                 <div
-                                  className="thumb-box"
                                   style={{
-                                    position:
-                                      "relative",
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: "8px",
+                                    marginTop: "7px",
+                                    flexWrap: "wrap",
                                   }}
                                 >
-                                  <img
-                                    src={
-                                      imgSrc
-                                    }
-                                    alt={`Upload ${
-                                      i + 1
-                                    }`}
+                                  <span
                                     style={{
-                                      filter: `brightness(${getPhotoBrightness(
+                                      fontSize: "11px",
+                                      fontWeight: 800,
+                                      color: "#64748b",
+                                    }}
+                                  >
+                                    Brightness {getPhotoBrightness(order.orderId, 0)}%
+                                  </span>
+
+                                  <input
+                                    type="range"
+                                    min="70"
+                                    max="130"
+                                    step="1"
+                                    value={getPhotoBrightness(order.orderId, 0)}
+                                    onChange={(event) =>
+                                      setPhotoBrightness(
                                         order.orderId,
-                                        i
-                                      )}%)`,
+                                        0,
+                                        Number(event.target.value)
+                                      )
+                                    }
+                                    aria-label="Brightness for bulk package photo"
+                                    style={{
+                                      width: "105px",
+                                      accentColor: "#7048d8",
                                     }}
                                   />
-                                </div>
 
-                                <div className="photo-info">
-                                  <strong>
-                                    Photo #
-                                    {i +
-                                      1}
-                                  </strong>
-
-                                  <span
-                                    className={`status-pill ${
-                                      isDone
-                                        ? "done"
-                                        : "new"
-                                    }`}
-                                  >
-                                    {isDone
-                                      ? "✓ Done (Printed)"
-                                      : "✨ New Upload"}
-                                  </span>
-                                  <div
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setPhotoBrightness(order.orderId, 0, 100)
+                                    }
                                     style={{
-                                      display:
-                                        "flex",
-                                      alignItems:
-                                        "center",
-                                      gap: "8px",
-                                      marginTop:
-                                        "7px",
-                                      flexWrap:
-                                        "wrap",
+                                      border: "1px solid #d8c8ee",
+                                      background: "#faf7ff",
+                                      color: "#7048d8",
+                                      borderRadius: "8px",
+                                      padding: "4px 8px",
+                                      fontSize: "10px",
+                                      fontWeight: 900,
+                                      cursor: "pointer",
                                     }}
                                   >
-                                    <span
-                                      style={{
-                                        fontSize:
-                                          "11px",
-                                        fontWeight:
-                                          800,
-                                        color:
-                                          "#64748b",
-                                      }}
-                                    >
-                                      Brightness{" "}
-                                      {getPhotoBrightness(
-                                        order.orderId,
-                                        i
-                                      )}%
+                                    Reset
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="no-photos">
+                            No prepared package photo is available.
+                          </p>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <h3>
+                          Guest Uploads Stream ({photosReceived} received / {magnetsIncluded} included)
+                        </h3>
+
+                        <p
+                          style={{
+                            margin: "0 0 10px",
+                            fontSize: "11px",
+                            color: "#64748b",
+                          }}
+                        >
+                          Adjust brightness for individual photos before batch printing. These adjustments are for this Party Hub session only.
+                        </p>
+
+                        {photos.length === 0 ? (
+                          <p className="no-photos">
+                            Awaiting guest uploads via QR code...
+                          </p>
+                        ) : (
+                          <div className="photo-lines-list">
+                            {photos.map((imgSrc: string, i: number) => {
+                              const isDone = completedIndices.includes(i);
+                              const isSelected = selectedIndices.includes(i);
+
+                              return (
+                                <div
+                                  key={i}
+                                  className={`photo-line-item ${isDone ? "done-item" : "new-item"}`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={isSelected}
+                                    onChange={() => toggleSelectPhoto(order.orderId, i)}
+                                    aria-label={`Select photo ${i + 1}`}
+                                  />
+
+                                  <div className="thumb-box" style={{ position: "relative" }}>
+                                    <img
+                                      src={imgSrc}
+                                      alt={`Upload ${i + 1}`}
+                                      style={{ filter: `brightness(${getPhotoBrightness(order.orderId, i)}%)` }}
+                                    />
+                                  </div>
+
+                                  <div className="photo-info">
+                                    <strong>Photo #{i + 1}</strong>
+
+                                    <span className={`status-pill ${isDone ? "done" : "new"}`}>
+                                      {isDone ? "✓ Done (Printed)" : "✨ New Upload"}
                                     </span>
 
-                                    <input
-                                      type="range"
-                                      min="70"
-                                      max="130"
-                                      step="1"
-                                      value={getPhotoBrightness(
-                                        order.orderId,
-                                        i
-                                      )}
-                                      onChange={(
-                                        event
-                                      ) =>
-                                        setPhotoBrightness(
-                                          order.orderId,
-                                          i,
-                                          Number(
-                                            event
-                                              .target
-                                              .value
-                                          )
-                                        )
-                                      }
-                                      aria-label={`Brightness for photo ${
-                                        i + 1
-                                      }`}
+                                    <div
                                       style={{
-                                        width:
-                                          "105px",
-                                        accentColor:
-                                          "#7048d8",
-                                      }}
-                                    />
-
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        setPhotoBrightness(
-                                          order.orderId,
-                                          i,
-                                          100
-                                        )
-                                      }
-                                      style={{
-                                        border:
-                                          "1px solid #d8c8ee",
-                                        background:
-                                          "#faf7ff",
-                                        color:
-                                          "#7048d8",
-                                        borderRadius:
-                                          "8px",
-                                        padding:
-                                          "4px 8px",
-                                        fontSize:
-                                          "10px",
-                                        fontWeight:
-                                          900,
-                                        cursor:
-                                          "pointer",
+                                        display: "flex",
+                                        alignItems: "center",
+                                        gap: "8px",
+                                        marginTop: "7px",
+                                        flexWrap: "wrap",
                                       }}
                                     >
-                                      Reset
-                                    </button>
-                                  </div>
-                                </div>
+                                      <span
+                                        style={{
+                                          fontSize: "11px",
+                                          fontWeight: 800,
+                                          color: "#64748b",
+                                        }}
+                                      >
+                                        Brightness {getPhotoBrightness(order.orderId, i)}%
+                                      </span>
 
-                                <button
-                                  type="button"
-                                  className={`button ${
-                                    isDone
-                                      ? "secondary"
-                                      : "primary"
-                                  }`}
-                                  style={{
-                                    fontSize:
-                                      "12px",
-                                    padding:
-                                      "6px 14px",
-                                    minHeight:
-                                      "34px",
-                                  }}
-                                  onClick={() =>
-                                    togglePhotoDone(
-                                      order.orderId,
-                                      i
-                                    )
-                                  }
-                                >
-                                  {isDone
-                                    ? "Mark New"
-                                    : "Mark Done ✓"}
-                                </button>
-                              </div>
-                            );
-                          }
+                                      <input
+                                        type="range"
+                                        min="70"
+                                        max="130"
+                                        step="1"
+                                        value={getPhotoBrightness(order.orderId, i)}
+                                        onChange={(event) =>
+                                          setPhotoBrightness(
+                                            order.orderId,
+                                            i,
+                                            Number(event.target.value)
+                                          )
+                                        }
+                                        aria-label={`Brightness for photo ${i + 1}`}
+                                        style={{ width: "105px", accentColor: "#7048d8" }}
+                                      />
+
+                                      <button
+                                        type="button"
+                                        onClick={() => setPhotoBrightness(order.orderId, i, 100)}
+                                        style={{
+                                          border: "1px solid #d8c8ee",
+                                          background: "#faf7ff",
+                                          color: "#7048d8",
+                                          borderRadius: "8px",
+                                          padding: "4px 8px",
+                                          fontSize: "10px",
+                                          fontWeight: 900,
+                                          cursor: "pointer",
+                                        }}
+                                      >
+                                        Reset
+                                      </button>
+                                    </div>
+                                  </div>
+
+                                  <button
+                                    type="button"
+                                    className={`button ${isDone ? "secondary" : "primary"}`}
+                                    style={{ fontSize: "12px", padding: "6px 14px", minHeight: "34px" }}
+                                    onClick={() => togglePhotoDone(order.orderId, i)}
+                                  >
+                                    {isDone ? "Mark New" : "Mark Done ✓"}
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          </div>
                         )}
-                      </div>
+                      </>
                     )}
                   </div>
                 </div>
@@ -2937,6 +4105,46 @@ export default function PartyHubPage() {
           border: 1px solid #bbf7d0;
           font-size: 12px;
           font-weight: 900;
+        }
+
+        /* ----------------------------------------------- */
+        /* FRAME */
+        /* ----------------------------------------------- */
+
+        /* ----------------------------------------------- */
+        /* CUSTOM BACKGROUND PREVIEW */
+        /* ----------------------------------------------- */
+
+        .background-preview-row {
+          display: flex;
+          align-items: center;
+          gap: 14px;
+          padding-top: 10px;
+          border-top: 1px solid #e2e8f0;
+        }
+
+        .background-preview {
+          width: 180px;
+          height: 120px;
+          max-width: 180px;
+          max-height: 120px;
+          border-radius: 12px;
+          background: #f8fafc;
+          border: 1px solid #cbd5e1;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          overflow: hidden;
+          flex: 0 0 180px;
+        }
+
+        .background-preview img {
+          display: block;
+          width: 100%;
+          height: 100%;
+          max-width: 100%;
+          max-height: 100%;
+          object-fit: contain;
         }
 
         /* ----------------------------------------------- */

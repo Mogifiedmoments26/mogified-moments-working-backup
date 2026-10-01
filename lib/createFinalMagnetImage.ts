@@ -105,12 +105,12 @@ export async function createFinalMagnetImage({
   const isSquare = shape === "square";
   const isCircle = shape === "circle";
 
-  const fullSize = isSquare ? 1200 : isCircle ? 1397 : 708;
+  const fullSize = isSquare ? 1200 : isCircle ? 1320 : 708;
 
   const faceSize = isSquare
     ? Math.round(fullSize * (52 / 61))
     : isCircle
-    ? Math.round(fullSize * (59 / 71))
+    ? Math.round(fullSize * (59 / 66))
     : fullSize;
 
   const offset = Math.round((fullSize - faceSize) / 2);

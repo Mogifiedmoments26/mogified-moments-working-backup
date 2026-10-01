@@ -59,6 +59,9 @@ function createClientId() {
 
 type Step = 1 | 2 | 3 | 4;
 type OrderMode = "stall" | "party";
+type PartyFulfillmentMode = "live" | "same-photo";
+type PartyKeychainBackMode = "individual" | "shared";
+type PartyKeychainSharedBackSource = "upload" | "custom-request";
 type PaymentMethod = "upi" | "cash";
 
 type PaymentDetails = {
@@ -82,7 +85,6 @@ type CartItem = {
   cropPixelsBack?: CropPixels | null;
   frameId: string | null;
   customFrameSrc?: string | null;
-  customWatermark?: string;
   backgroundId?: BackgroundId | null;
 };
 
@@ -91,6 +93,12 @@ type PlacedOrder = Order &
     batchId: string;
     token?: string;
     originalPhotoUrl?: string;
+    partyFulfillmentMode?: PartyFulfillmentMode;
+  partyKeychainBackMode?: PartyKeychainBackMode;
+  partyKeychainSharedBackSource?: PartyKeychainSharedBackSource | null;
+  partyKeychainSharedBackUrl?: string;
+  partyKeychainCustomBackRequested?: boolean;
+  partyKeychainCustomBackNotes?: string;
   };
 
 const loadRazorpayScript = () => {
@@ -131,6 +139,12 @@ export default function CustomerApp() {
   const [cropBack, setCropBack] = useState<CropState>(EMPTY_CROP);
   const [cropPixelsBack, setCropPixelsBack] = useState<CropPixels | null>(null);
   const [partyKeychainStrap, setPartyKeychainStrap] = useState<"leather" | "pearl" | "mix">("leather");
+  const [partyKeychainBackMode, setPartyKeychainBackMode] = useState<PartyKeychainBackMode>("individual");
+  const [partyKeychainSharedBackSource, setPartyKeychainSharedBackSource] = useState<PartyKeychainSharedBackSource | null>(null);
+  const [partyKeychainSharedBackPhoto, setPartyKeychainSharedBackPhoto] = useState("");
+  const [partyKeychainSharedBackCrop, setPartyKeychainSharedBackCrop] = useState<CropState>(EMPTY_CROP);
+  const [partyKeychainSharedBackCropPixels, setPartyKeychainSharedBackCropPixels] = useState<CropPixels | null>(null);
+  const [partyKeychainCustomBackNotes, setPartyKeychainCustomBackNotes] = useState("");
   const [quantity, setQuantity] = useState(1);
   const [photo, setPhoto] = useState("");
   const [crop, setCrop] = useState<CropState>(EMPTY_CROP);
@@ -139,7 +153,6 @@ export default function CustomerApp() {
   const [frameCategory, setFrameCategory] = useState("All");
   const [backgroundId, setBackgroundId] = useState<BackgroundId | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [customWatermark, setCustomWatermark] = useState<string>("");
 
   // Custom frame upload & Live Camera
   const [customCustomerFrameSrc, setCustomCustomerFrameSrc] = useState<string | null>(null);
@@ -151,6 +164,7 @@ export default function CustomerApp() {
 
   // Party Package state
   const [selectedPackage, setSelectedPackage] = useState<PartyPackage | null>(null);
+  const [partyFulfillmentMode, setPartyFulfillmentMode] = useState<PartyFulfillmentMode>("live");
   const [showPackageModal, setShowPackageModal] = useState(false);
   const [eventName, setEventName] = useState("");
   const [eventDate, setEventDate] = useState("");
@@ -178,6 +192,7 @@ export default function CustomerApp() {
   const fileRef = useRef<HTMLInputElement>(null);
   const fileBackRef = useRef<HTMLInputElement>(null);
   const customFrameInputRef = useRef<HTMLInputElement>(null);
+  const partySharedBackFileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -193,6 +208,18 @@ export default function CustomerApp() {
       }
     }
   }, []);
+
+  useEffect(() => {
+    if (product === "keychain" || (product as string) === "leather_name_keychain") {
+      setFrameId(null);
+      setCustomCustomerFrameSrc(null);
+      setCustomFrameRequested(false);
+      setCustomFrameNotes("");
+      setBackgroundId(null);
+      setCustomBackgroundRequested(false);
+      setCustomBackgroundNotes("");
+    }
+  }, [product]);
 
   const selectedFrame: Frame | null = useMemo(() => {
     if (customCustomerFrameSrc) {
@@ -355,21 +382,30 @@ export default function CustomerApp() {
     setCustomFrameNotes("");
     setCustomBackgroundRequested(false);
     setCustomBackgroundNotes("");
-    setCustomWatermark("");
     setFrameCategory("All");
     setBackgroundId(null);
     setProduct("square");
     setKeychainStrap("leather");
+    setPartyKeychainBackMode("individual");
+    setPartyKeychainSharedBackSource(null);
+    setPartyKeychainSharedBackPhoto("");
+    setPartyKeychainSharedBackCrop(EMPTY_CROP);
+    setPartyKeychainSharedBackCropPixels(null);
+    setPartyKeychainCustomBackNotes("");
     setEditingId(null);
   }
 
-  function readPhoto(file: File, target: "front" | "back" = "front") {
+  function readPhoto(file: File, target: "front" | "back" | "party-shared-back" = "front") {
     if (!file.type.startsWith("image/")) return;
 
     const reader = new FileReader();
     reader.onload = () => {
       const result = String(reader.result);
-      if (target === "back") {
+      if (target === "party-shared-back") {
+        setPartyKeychainSharedBackPhoto(result);
+        setPartyKeychainSharedBackCrop(EMPTY_CROP);
+        setPartyKeychainSharedBackCropPixels(null);
+      } else if (target === "back") {
         setPhotoBack(result);
         setCropBack(EMPTY_CROP);
         setCropPixelsBack(null);
@@ -488,7 +524,6 @@ export default function CustomerApp() {
       cropPixelsBack: product === "keychain" ? cropPixelsBack : undefined,
       frameId,
       customFrameSrc: customCustomerFrameSrc,
-      customWatermark,
       backgroundId,
     };
 
@@ -511,6 +546,7 @@ export default function CustomerApp() {
 
   function handleSelectPackage(pkg: PartyPackage) {
     setSelectedPackage(pkg);
+    setPartyFulfillmentMode("live");
     setShowPackageModal(false);
     setOrderMode("party");
     setError("");
@@ -536,6 +572,28 @@ export default function CustomerApp() {
     setError("");
 
     if (selectedPackage) {
+      if (partyFulfillmentMode === "same-photo" && (product as string) !== "square" && (product as string) !== "circle") {
+        setError("One Photo • Print All is available for Square and Circle Magnets. Please choose a magnet product.");
+        return;
+      }
+      if (partyFulfillmentMode === "same-photo" && !photo) {
+        setError("Please upload the photo you want printed on all the magnets.");
+        return;
+      }
+      if (partyFulfillmentMode === "live" && product === "keychain" && partyKeychainBackMode === "shared") {
+        if (!partyKeychainSharedBackSource) {
+          setError("Please choose how the shared keychain back will be supplied.");
+          return;
+        }
+        if (partyKeychainSharedBackSource === "upload" && !partyKeychainSharedBackPhoto) {
+          setError("Please upload the photo/design to use on the back of all keychains.");
+          return;
+        }
+        if (partyKeychainSharedBackSource === "custom-request" && !partyKeychainCustomBackNotes.trim()) {
+          setError("Please describe the custom photo/design you would like for the back of all keychains.");
+          return;
+        }
+      }
       if (!eventName.trim()) {
         setError("Please enter the Event Name (e.g. Maya's 5th Birthday).");
         return;
@@ -588,6 +646,33 @@ export default function CustomerApp() {
             : null);
         let originalPhotoUrl = "";
         let finalPhotoUrl = "";
+        let partyKeychainSharedBackUrl = "";
+
+        if (
+          product === "keychain" &&
+          partyFulfillmentMode === "live" &&
+          partyKeychainBackMode === "shared" &&
+          partyKeychainSharedBackSource === "upload" &&
+          partyKeychainSharedBackPhoto
+        ) {
+          const sharedBackImage = await createFinalMagnetImage({
+            photo: partyKeychainSharedBackPhoto,
+            frameSrc: null,
+            cropPixels: partyKeychainSharedBackCropPixels ?? null,
+            shape: "keychain",
+          });
+
+          try {
+            partyKeychainSharedBackUrl = await savePhoto(
+              sharedBackImage,
+              orderId,
+              "party-keychain-shared-back.png"
+            );
+          } catch (uploadErr) {
+            console.warn("Shared keychain back storage fallback:", uploadErr);
+            partyKeychainSharedBackUrl = sharedBackImage;
+          }
+        }
 
         if ((product as string) === "leather_name_keychain") {
           finalPhotoUrl = "/logo.png";
@@ -629,6 +714,25 @@ export default function CustomerApp() {
           quantity: selectedPackage.quantity,
           unitPrice: Math.round(baseOrderTotal / selectedPackage.quantity),
           packageId: selectedPackage.id,
+          partyFulfillmentMode,
+          partyKeychainBackMode: product === "keychain" && partyFulfillmentMode === "live" ? partyKeychainBackMode : undefined,
+          partyKeychainSharedBackSource:
+            product === "keychain" && partyFulfillmentMode === "live" && partyKeychainBackMode === "shared"
+              ? partyKeychainSharedBackSource
+              : null,
+          partyKeychainSharedBackUrl: partyKeychainSharedBackUrl || undefined,
+          partyKeychainCustomBackRequested:
+            product === "keychain" &&
+            partyFulfillmentMode === "live" &&
+            partyKeychainBackMode === "shared" &&
+            partyKeychainSharedBackSource === "custom-request",
+          partyKeychainCustomBackNotes:
+            product === "keychain" &&
+            partyFulfillmentMode === "live" &&
+            partyKeychainBackMode === "shared" &&
+            partyKeychainSharedBackSource === "custom-request"
+              ? partyKeychainCustomBackNotes.trim()
+              : "",
           packagePrice: baseOrderTotal,
           advancePaidAmount: payableAmountNow,
           balanceDueAmount: balanceDueAmount,
@@ -891,6 +995,7 @@ export default function CustomerApp() {
   function startAnotherOrder() {
     setPlacedOrders([]);
     setSelectedPackage(null);
+    setPartyFulfillmentMode("live");
     setEventName("");
     setEventDate("");
     setEventTime("");
@@ -930,6 +1035,8 @@ export default function CustomerApp() {
   if (step === 4 && placedOrders.length) {
     const mainOrder = placedOrders[0];
     const isPartyOrder = Boolean(mainOrder?.packageId);
+    const isSamePhotoPartyOrder = isPartyOrder && mainOrder?.partyFulfillmentMode === "same-photo";
+    const isLivePartyOrder = isPartyOrder && !isSamePhotoPartyOrder;
     const tokenDisplay = mainOrder.token || `#${mainOrder.orderId.slice(-4)}`;
 
     const guestLink =
@@ -1086,16 +1193,18 @@ export default function CustomerApp() {
           <div className="mm-success-icon">🎉</div>
 
           <p className="mm-eyebrow">
-            {isPartyOrder ? "Party Package Confirmed" : "Printing in Progress"}
+            {isPartyOrder ? (isSamePhotoPartyOrder ? "Bulk Photo Package Confirmed" : "Party Package Confirmed") : "Printing in Progress"}
           </p>
 
           <h1 style={{ fontSize: "28px", margin: "8px 0" }}>
-            {isPartyOrder ? "Party Package Booked!" : "Printing your moments right now!"}
+            {isPartyOrder ? (isSamePhotoPartyOrder ? "Your package is booked!" : "Party Package Booked!") : "Printing your moments right now!"}
           </h1>
 
           <p className="mm-muted" style={{ fontSize: "14px", lineHeight: "1.5" }}>
             {isPartyOrder
-              ? `Your package for ${mainOrder.eventName || "your celebration"} is confirmed! Share the QR code with your guests.`
+              ? isSamePhotoPartyOrder
+                ? `Your ${mainOrder.productName || "magnet"} package is confirmed. The same photo will be printed on all ${mainOrder.quantity} magnets.`
+                : `Your package for ${mainOrder.eventName || "your celebration"} is confirmed! Share the QR code with your guests.`
               : "Your magnets take about 2 minutes to print. Collect at the stall counter."}
           </p>
 
@@ -1106,11 +1215,13 @@ export default function CustomerApp() {
               <span className="tracker-badge">{mainOrder.status}</span>
             </div>
             <p style={{ margin: "4px 0 0", fontSize: "12px", color: "#666" }}>
-              Keep this screen open or check token <b>{tokenDisplay}</b> at the counter.
+              {isSamePhotoPartyOrder
+                ? "We will prepare the full package using your uploaded photo."
+                : `Keep this screen open or check token ${tokenDisplay} at the counter.`}
             </p>
           </div>
 
-          {isPartyOrder && (
+          {isLivePartyOrder && (
             <div className="mm-qr-table-card-container">
               <div className="mm-qr-table-border-box">
                 <div className="mm-qr-table-brand">
@@ -1320,7 +1431,7 @@ export default function CustomerApp() {
               <div className="mm-package-header">
                 <span className="mm-eyebrow">Celebration &amp; Event Packages</span>
                 <h2>Choose a Party Package</h2>
-                <p>Personalised pieces for birthdays, weddings, and celebrations with live guest QR photo uploads.</p>
+                <p>Personalised pieces for birthdays, weddings, and celebrations — choose live guest photos or one photo printed across the entire package.</p>
               </div>
 
               <div className="mm-packages-grid">
@@ -1437,6 +1548,48 @@ export default function CustomerApp() {
               </div>
             )}
 
+            {selectedPackage && (
+              <div style={{ margin: "16px 0", padding: "16px", background: "#fff", borderRadius: "16px", border: "1.5px solid #e2e8f0" }}>
+                <p className="mm-eyebrow">How should your package photos be supplied?</p>
+                <h3 style={{ margin: "4px 0 6px", color: "#292342", fontSize: "18px" }}>Choose your package photo mode</h3>
+                <p className="mm-muted" style={{ fontSize: "12px", margin: "0 0 12px", lineHeight: "1.5" }}>
+                  You can keep the live guest-photo experience, or provide one photo that we print on every magnet in your package.
+                </p>
+
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "10px" }}>
+                  <button
+                    type="button"
+                    className={`mm-frame-card ${partyFulfillmentMode === "live" ? "selected" : ""}`}
+                    onClick={() => setPartyFulfillmentMode("live")}
+                    style={{ padding: "14px", textAlign: "left" }}
+                  >
+                    <strong style={{ display: "block", marginBottom: "4px" }}>🎉 Live Guest Photos</strong>
+                    <span style={{ display: "block", fontSize: "11px", color: "#64748b", lineHeight: "1.45" }}>
+                      Guests scan the QR code at your event and upload photos for the live print queue.
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    className={`mm-frame-card ${partyFulfillmentMode === "same-photo" ? "selected" : ""}`}
+                    onClick={() => setPartyFulfillmentMode("same-photo")}
+                    style={{ padding: "14px", textAlign: "left" }}
+                  >
+                    <strong style={{ display: "block", marginBottom: "4px" }}>🖼️ One Photo • Print All</strong>
+                    <span style={{ display: "block", fontSize: "11px", color: "#64748b", lineHeight: "1.45" }}>
+                      Upload one photo and we will print that same design on every magnet in the package.
+                    </span>
+                  </button>
+                </div>
+
+                {partyFulfillmentMode === "same-photo" && (
+                  <div style={{ marginTop: "10px", padding: "10px 12px", borderRadius: "12px", background: "#f5f0ff", color: "#5b3aa8", fontSize: "12px", fontWeight: 700 }}>
+                    📸 Upload one photo below. Bronze = {selectedPackage.quantity} identical magnets, Silver = {selectedPackage.quantity}, and so on.
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* PRODUCT SELECTION FOR BOTH STALL & PARTY PACKAGES (INCLUDING LEATHER NAME KEYCHAIN FOR PARTY ONLY) */}
             <div style={{ margin: "16px 0", padding: "16px", background: "#f8fafc", borderRadius: "16px", border: "1.5px solid #e2e8f0" }}>
               <p className="mm-eyebrow">Choose product type</p>
@@ -1529,20 +1682,6 @@ export default function CustomerApp() {
               </div>
             ) : (
               <>
-                <div style={{ margin: "16px 0", padding: "16px", background: "#f8fafc", borderRadius: "16px", border: "1.5px solid #e2e8f0" }}>
-                  <label style={{ display: "block", fontSize: "12px", fontWeight: 800, color: "#334155", marginBottom: "6px" }}>
-                    ✍️ Custom Event Watermark / Text Overlay (Optional)
-                  </label>
-                  <input
-                    type="text"
-                    value={customWatermark}
-                    onChange={(e) => setCustomWatermark(e.target.value)}
-                    placeholder="e.g. Cecilia's Birthday 2026"
-                    maxLength={35}
-                    style={{ width: "100%", padding: "12px", border: "1.5px solid #cbd5e1", borderRadius: "12px", fontSize: "14px", outline: "none", background: "#fff" }}
-                  />
-                </div>
-
                 {!selectedPackage && (
                   <div style={{ margin: "16px 0", padding: "16px", background: "#faf7fc", borderRadius: "16px", border: "1.5px solid #ecdff5", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                     <div>
@@ -1715,7 +1854,6 @@ export default function CustomerApp() {
                         frame={selectedFrame}
                         crop={crop}
                         cropPixels={cropPixels}
-                        customWatermark={customWatermark}
                         product={product}
                         backgroundId={backgroundId}
                       />
@@ -1727,7 +1865,11 @@ export default function CustomerApp() {
                           : "52mm × 52mm Square Magnet"}
                       </strong>
                       <span>
-                        {selectedFrame ? `Frame: ${selectedFrame.name}` : "Full-Bleed Borderless Photo"}
+                        {product === "keychain" || (product as string) === "leather_name_keychain"
+                          ? "Full-Bleed Borderless Photo"
+                          : selectedFrame
+                          ? `Frame: ${selectedFrame.name}`
+                          : "Full-Bleed Borderless Photo"}
                       </span>
                     </div>
                   </div>
@@ -1735,7 +1877,134 @@ export default function CustomerApp() {
 
                 {/* BACK PHOTO SECTION FOR KEYCHAIN */}
                 {product === "keychain" && (
-                  <div style={{ margin: "20px 0", padding: "16px", background: "#fffaf5", borderRadius: "16px", border: "1.5px solid #f1dfc8" }}>
+                  <>
+                    {selectedPackage && partyFulfillmentMode === "live" && (
+                      <div style={{ margin: "20px 0 12px", padding: "16px", background: "#fff", borderRadius: "16px", border: "1.5px solid #e2e8f0" }}>
+                        <p className="mm-eyebrow">Keychain Back for Your Event</p>
+                        <h3 style={{ margin: "4px 0 6px", color: "#292342", fontSize: "17px" }}>How should the keychain backs be supplied?</h3>
+                        <p className="mm-muted" style={{ fontSize: "12px", margin: "0 0 12px", lineHeight: "1.5" }}>
+                          Each guest can have their own back photo, or you can use one shared back design for every keychain in the package.
+                        </p>
+
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "10px" }}>
+                          <button
+                            type="button"
+                            className={`mm-frame-card ${partyKeychainBackMode === "individual" ? "selected" : ""}`}
+                            onClick={() => {
+                              setPartyKeychainBackMode("individual");
+                              setPartyKeychainSharedBackSource(null);
+                              setPartyKeychainSharedBackPhoto("");
+                              setPartyKeychainCustomBackNotes("");
+                            }}
+                            style={{ padding: "14px", textAlign: "left" }}
+                          >
+                            <strong style={{ display: "block", marginBottom: "4px" }}>👤 Individual Back</strong>
+                            <span style={{ display: "block", fontSize: "11px", color: "#64748b", lineHeight: "1.45" }}>
+                              Each guest provides their own back photo.
+                            </span>
+                          </button>
+
+                          <button
+                            type="button"
+                            className={`mm-frame-card ${partyKeychainBackMode === "shared" ? "selected" : ""}`}
+                            onClick={() => setPartyKeychainBackMode("shared")}
+                            style={{ padding: "14px", textAlign: "left" }}
+                          >
+                            <strong style={{ display: "block", marginBottom: "4px" }}>🎁 Same Back for All</strong>
+                            <span style={{ display: "block", fontSize: "11px", color: "#64748b", lineHeight: "1.45" }}>
+                              One host-approved back design is used for every guest keychain.
+                            </span>
+                          </button>
+                        </div>
+
+                        {partyKeychainBackMode === "shared" && (
+                          <div style={{ marginTop: "12px", padding: "14px", borderRadius: "12px", background: "#f8f5ff", border: "1px solid #e7ddff" }}>
+                            <strong style={{ display: "block", color: "#292342", fontSize: "13px", marginBottom: "8px" }}>Shared Back Design</strong>
+                            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "8px" }}>
+                              <button
+                                type="button"
+                                className={`mm-button ${partyKeychainSharedBackSource === "upload" ? "mm-primary" : "mm-secondary"}`}
+                                onClick={() => {
+                                  setPartyKeychainSharedBackSource("upload");
+                                  setPartyKeychainCustomBackNotes("");
+                                }}
+                              >
+                                📷 Upload My Photo
+                              </button>
+                              <button
+                                type="button"
+                                className={`mm-button ${partyKeychainSharedBackSource === "custom-request" ? "mm-primary" : "mm-secondary"}`}
+                                onClick={() => {
+                                  setPartyKeychainSharedBackSource("custom-request");
+                                  setPartyKeychainSharedBackPhoto("");
+                                }}
+                              >
+                                ✨ Request Custom Photo
+                              </button>
+                            </div>
+
+                            {partyKeychainSharedBackSource === "upload" && (
+                              <div style={{ marginTop: "12px" }}>
+                                <input
+                                  ref={partySharedBackFileRef}
+                                  hidden
+                                  type="file"
+                                  accept="image/*"
+                                  onChange={(e) => {
+                                    const file = e.target.files?.[0];
+                                    if (!file) return;
+                                    readPhoto(file, "party-shared-back");
+                                  }}
+                                />
+                                {!partyKeychainSharedBackPhoto ? (
+                                  <button
+                                    type="button"
+                                    className="mm-button mm-secondary"
+                                    onClick={() => partySharedBackFileRef.current?.click()}
+                                    style={{ width: "100%" }}
+                                  >
+                                    📁 Upload Photo / Design for All Backs
+                                  </button>
+                                ) : (
+                                  <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+                                    <img
+                                      src={partyKeychainSharedBackPhoto}
+                                      alt="Shared keychain back"
+                                      style={{ width: "64px", height: "64px", borderRadius: "50%", objectFit: "cover", border: "2px solid #7048d8" }}
+                                    />
+                                    <div style={{ flex: 1, minWidth: "180px" }}>
+                                      <strong style={{ display: "block", fontSize: "12px", color: "#292342" }}>Shared back selected</strong>
+                                      <span style={{ display: "block", fontSize: "11px", color: "#64748b", marginTop: "3px" }}>This one photo/design will be applied to every guest keychain back.</span>
+                                    </div>
+                                    <button type="button" className="mm-button mm-secondary" onClick={() => partySharedBackFileRef.current?.click()}>Change</button>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+
+                            {partyKeychainSharedBackSource === "custom-request" && (
+                              <div style={{ marginTop: "12px" }}>
+                                <label className="mm-form-field">
+                                  <span>What would you like on the back?</span>
+                                  <textarea
+                                    value={partyKeychainCustomBackNotes}
+                                    onChange={(e) => setPartyKeychainCustomBackNotes(e.target.value)}
+                                    placeholder="Example: Create a thank-you design using our event photo, with 'Thank you for celebrating with us!'"
+                                    rows={4}
+                                  />
+                                </label>
+                                <div style={{ marginTop: "8px", padding: "10px 12px", borderRadius: "10px", background: "#fff", color: "#5b3aa8", fontSize: "11px", lineHeight: "1.45", fontWeight: 700 }}>
+                                  ✨ Your request will go to the Studio. The admin will upload the final custom back photo, and that one design will be applied to all keychains in this event.
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {!(selectedPackage && partyFulfillmentMode === "live" && partyKeychainBackMode === "shared") && (
+                      <div style={{ margin: "20px 0", padding: "16px", background: "#fffaf5", borderRadius: "16px", border: "1.5px solid #f1dfc8" }}>
                     <p className="mm-eyebrow">Keychain Back Photo &amp; Strap</p>
                     <strong style={{ fontSize: "15px", color: "#292342", display: "block", marginBottom: "10px" }}>
                       Independent Back Photo
@@ -1906,12 +2175,14 @@ export default function CustomerApp() {
                         ))}
                       </div>
                     </div>
-                  </div>
+                      </div>
+                    )}
+                  </>
                 )}
               </>
             )}
 
-            {(product === "square" || product === "circle" || selectedPackage) && (product as string) !== "leather_name_keychain" && (
+            {(product === "square" || product === "circle") && (
               <div className="mm-background-section">
                 <div className="mm-frame-title">
                   <div>
@@ -2030,7 +2301,7 @@ export default function CustomerApp() {
               </div>
             )}
 
-            {(product === "square" || product === "circle" || selectedPackage) && (product as string) !== "leather_name_keychain" && (
+            {(product === "square" || product === "circle") && (
               <div className="mm-frame-section">
                 <div className="mm-frame-title">
                   <div>
@@ -2218,7 +2489,6 @@ export default function CustomerApp() {
                           frame={FRAMES.find((f) => f.id === item.frameId) ?? null}
                           crop={item.crop}
                           cropPixels={item.cropPixels ?? null}
-                          customWatermark={item.customWatermark}
                           product={(item.productId as string) === "leather_name_keychain" ? "keychain" : item.productId}
                           backgroundId={item.backgroundId ?? null}
                           small
@@ -2703,7 +2973,6 @@ function MagnetPreviewInline({
   frame,
   crop,
   cropPixels,
-  customWatermark,
   backgroundId = null,
   small = false,
   product = "square",
@@ -2712,7 +2981,6 @@ function MagnetPreviewInline({
   frame: Frame | null;
   crop: CropState;
   cropPixels?: CropPixels | null;
-  customWatermark?: string;
   backgroundId?: BackgroundId | null;
   small?: boolean;
   product?: ProductId | "leather_name_keychain";
@@ -2816,27 +3084,6 @@ function MagnetPreviewInline({
             )}
             {frame && <img src={frame.src} alt="" className="mm-preview-frame" />}
           </>
-        )}
-
-        {customWatermark && (
-          <div
-            style={{
-              position: "absolute",
-              bottom: "4px",
-              left: "50%",
-              transform: "translateX(-50%)",
-              background: "rgba(0,0,0,0.65)",
-              color: "#fff",
-              fontSize: "8px",
-              fontWeight: 800,
-              padding: "2px 4px",
-              borderRadius: "3px",
-              zIndex: 5,
-              whiteSpace: "nowrap",
-            }}
-          >
-            {customWatermark}
-          </div>
         )}
 
         {isCreatingThemedPreview && backgroundId && (
